@@ -692,6 +692,14 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     fillRect(renderer_, {0.0f, 0.0f, static_cast<float>(kWindowWidth), static_cast<float>(kWindowHeight)}, {11, 14, 20, 255});
     fillRect(renderer_, worldViewport_, {20, 27, 36, 255});
 
+    const SDL_Rect worldClip {
+        static_cast<int>(std::floor(worldViewport_.x)),
+        static_cast<int>(std::floor(worldViewport_.y)),
+        static_cast<int>(std::ceil(worldViewport_.w)),
+        static_cast<int>(std::ceil(worldViewport_.h))
+    };
+    SDL_RenderSetClipRect(renderer_, &worldClip);
+
     constexpr int gridColumns = 26;
     constexpr int gridRows = 18;
     for (int row = 0; row < gridRows; ++row) {
@@ -776,6 +784,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         }
     }
     drawBrainOverlay(info);
+    SDL_RenderSetClipRect(renderer_, nullptr);
 
     const SDL_FRect panel {
         static_cast<float>(kWindowWidth - kPanelWidth - kMargin),
