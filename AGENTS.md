@@ -45,8 +45,9 @@ The long-term goal is not a scripted predator/prey toy. The goal is a watchable,
 - Articulated segmented body chains with persistent per-segment state, flow-coupled lag, and segment-aware collisions.
 - Morphology-derived thrust, drag, turning, bite reach, sensing, upkeep, and reproduction thresholds.
 - Toroidal world with nutrient field, current field, blooms, and carrion.
-- Recurrent controller with bucketed sensory inputs.
-- Native inspection HUD with history graphs, ecology drift, and selection/controller readouts including slip/curvature-style body metrics.
+- Sparse topology-evolving controller with bucketed sensory inputs plus recurrent memory channels.
+- Native inspection HUD with history graphs, ecology drift, a live brain-topology overlay, and selection readouts including slip/curvature-style body metrics.
+- The app now boots with a subject selected, and the HUD exposes explicit observer picks (`random subject`, `top energy`) to support QA and watchability.
 
 ## Important Design Rule
 

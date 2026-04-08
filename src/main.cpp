@@ -117,11 +117,29 @@ int main(int argc, char** argv) {
                         case SDLK_c:
                             simulation.clearSelection();
                             break;
+                        case SDLK_n:
+                            simulation.selectRandomCreature();
+                            break;
+                        case SDLK_f:
+                            simulation.selectTopEnergyCreature();
+                            break;
                         default:
                             break;
                     }
                     break;
                 case SDL_MOUSEBUTTONDOWN:
+                    if (event.button.button == SDL_BUTTON_LEFT) {
+                        const auto uiAction = renderer.uiActionAt(event.button.x, event.button.y);
+                        if (uiAction == alife::Renderer::UiAction::SelectRandom) {
+                            simulation.selectRandomCreature();
+                            break;
+                        }
+                        if (uiAction == alife::Renderer::UiAction::SelectTopEnergy) {
+                            simulation.selectTopEnergyCreature();
+                            break;
+                        }
+                    }
+
                     if (event.button.button == SDL_BUTTON_LEFT
                         && renderer.screenPointInWorld(event.button.x, event.button.y)) {
                         const auto worldPoint = renderer.screenToWorld(event.button.x, event.button.y, simulation);

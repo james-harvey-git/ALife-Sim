@@ -34,11 +34,11 @@ The first playable milestone in this repo includes:
 
 - toroidal water world with nutrient-driven bloom patches
 - current field that nudges body motion
-- evolving recurrent controllers
+- sparse topology-evolving controllers with recurrent memory inputs
 - segmented phenotypes with articulated body chains, flow-coupled lag, and body-part collision envelopes
 - grazing, carrion feeding, and live predation
 - reproduction with mutation from a single ancestor genome
-- native HUD with history graphs, ecology drift readouts, and controller inspection
+- native HUD with history graphs, ecology drift readouts, live brain topology overlay, and observer controls
 
 This is intentionally still an early foundation. The long-term plan is to grow from these articulated soft-body approximations toward richer jointed morphologies, stronger environmental physics, and deeper lineage/ecology observability.
 
@@ -49,9 +49,13 @@ This is intentionally still an early foundation. The long-term plan is to grow f
 - `2`: 2x speed
 - `3`: 4x speed
 - `R`: reseed the world
+- `N`: select a random subject
+- `F`: select the highest-energy subject
 - `C`: clear selection
 - `Left Click`: select the nearest creature in the sim view
 - `Esc`: quit
+
+On launch, the sim now starts with one creature already selected so the brain overlay and inspection readouts are immediately visible.
 
 ## Build
 

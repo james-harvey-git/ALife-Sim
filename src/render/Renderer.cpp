@@ -121,6 +121,12 @@ void fillRect(SDL_Renderer* renderer, const SDL_FRect& rect, SDL_Color color) {
     SDL_RenderFillRectF(renderer, &rect);
 }
 
+bool pointInRect(int x, int y, const SDL_FRect& rect) {
+    const float px = static_cast<float>(x);
+    const float py = static_cast<float>(y);
+    return px >= rect.x && px <= rect.x + rect.w && py >= rect.y && py <= rect.y + rect.h;
+}
+
 void drawTexturedFan(
     SDL_Renderer* renderer,
     const std::vector<SDL_Vertex>& vertices,
@@ -307,12 +313,24 @@ std::optional<Vec2> Renderer::screenToWorld(int screenX, int screenY, const Simu
     return Vec2 {nx * simulation.worldWidth(), ny * simulation.worldHeight()};
 }
 
+Renderer::UiAction Renderer::uiActionAt(int screenX, int screenY) const {
+    if (pointInRect(screenX, screenY, randomSelectButton_)) {
+        return UiAction::SelectRandom;
+    }
+    if (pointInRect(screenX, screenY, topEnergyButton_)) {
+        return UiAction::SelectTopEnergy;
+    }
+    return UiAction::None;
+}
+
 void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     if (renderer_ == nullptr) {
         return;
     }
 
     updateViewport(simulation);
+    randomSelectButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
+    topEnergyButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
 
     const auto worldToScreen = [&](const Vec2& world) {
         return SDL_FPoint {
@@ -339,10 +357,20 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         SDL_FreeSurface(surface);
     };
 
+    const Stats& stats = simulation.stats();
+    const auto info = simulation.selectionInfo();
+    const auto& history = simulation.history();
+
     auto drawCard = [&](const SDL_FRect& rect, const std::string& title) {
         fillRect(renderer_, rect, {22, 28, 37, 255});
         fillRect(renderer_, {rect.x, rect.y, rect.w, 28.0f}, {28, 40, 53, 255});
         drawText(font_, rect.x + 10.0f, rect.y + 5.0f, title, {224, 232, 240, 255});
+    };
+
+    auto drawButton = [&](const SDL_FRect& rect, const std::string& label, SDL_Color fill, SDL_Color text) {
+        fillRect(renderer_, rect, fill);
+        fillRect(renderer_, {rect.x, rect.y + rect.h - 2.0f, rect.w, 2.0f}, tint(fill, 1.18f, 255));
+        drawText(smallFont_, rect.x + 10.0f, rect.y + 6.0f, label, text);
     };
 
     auto drawSeries = [&](const SDL_FRect& rect, auto getter, float maxValue, SDL_Color color) {
@@ -360,18 +388,6 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         }
     };
 
-    auto drawSignedBar = [&](float x, float y, float w, float h, float value, SDL_Color positive, SDL_Color negative) {
-        fillRect(renderer_, {x, y, w, h}, {34, 43, 56, 255});
-        const float center = x + w * 0.5f;
-        fillRect(renderer_, {center - 1.0f, y, 2.0f, h}, {83, 102, 124, 255});
-        const float clamped = std::clamp(value, -1.0f, 1.0f);
-        if (clamped >= 0.0f) {
-            fillRect(renderer_, {center, y + 1.0f, clamped * (w * 0.5f - 2.0f), h - 2.0f}, positive);
-        } else {
-            fillRect(renderer_, {center + clamped * (w * 0.5f - 2.0f), y + 1.0f, -clamped * (w * 0.5f - 2.0f), h - 2.0f}, negative);
-        }
-    };
-
     auto drawBucketStrip = [&](float x, float y, float w, float h, const std::array<float, kSensorBuckets>& values, SDL_Color color) {
         const float cellW = (w - 4.0f) / static_cast<float>(kSensorBuckets);
         for (int bucket = 0; bucket < kSensorBuckets; ++bucket) {
@@ -383,6 +399,134 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
                 color
             );
         }
+    };
+
+    auto drawBrainOverlay = [&](const SelectionInfo& info) {
+        if (!info.valid) {
+            return;
+        }
+
+        const SDL_FRect overlay {
+            worldViewport_.x + 16.0f,
+            worldViewport_.y + 16.0f,
+            std::min(360.0f, worldViewport_.w * 0.42f),
+            std::min(250.0f, worldViewport_.h * 0.34f)
+        };
+        fillRect(renderer_, overlay, {12, 16, 22, 220});
+        fillRect(renderer_, {overlay.x, overlay.y, overlay.w, 26.0f}, {23, 33, 45, 232});
+        drawText(font_, overlay.x + 10.0f, overlay.y + 4.0f, "Brain Topology", {235, 240, 244, 255});
+        drawText(
+            smallFont_,
+            overlay.x + overlay.w - 112.0f,
+            overlay.y + 7.0f,
+            "h" + std::to_string(info.brainHiddenCount) + "  c" + std::to_string(info.brainConnectionCount),
+            {156, 176, 196, 255}
+        );
+
+        const SDL_FRect graph {
+            overlay.x + 10.0f,
+            overlay.y + 34.0f,
+            overlay.w - 20.0f,
+            overlay.h - 58.0f
+        };
+        fillRect(renderer_, graph, {16, 21, 28, 210});
+
+        const float inputX = graph.x + 18.0f;
+        const float memoryX = graph.x + graph.w * 0.32f;
+        const float hiddenX = graph.x + graph.w * 0.62f;
+        const float outputX = graph.x + graph.w - 22.0f;
+
+        const auto nodeY = [&](int index, int count) {
+            if (count <= 1) {
+                return graph.y + graph.h * 0.5f;
+            }
+            const float t = static_cast<float>(index) / static_cast<float>(count - 1);
+            return graph.y + 8.0f + t * (graph.h - 16.0f);
+        };
+
+        const auto valueForNode = [&](BrainGenome::NodeKind kind, int index) {
+            switch (kind) {
+                case BrainGenome::NodeKind::Input:
+                    return info.inputs[index];
+                case BrainGenome::NodeKind::Memory:
+                    return info.memory[index];
+                case BrainGenome::NodeKind::Hidden:
+                    return info.hiddenActivations[index];
+                default:
+                    return info.outputs[index];
+            }
+        };
+
+        const auto pointForNode = [&](BrainGenome::NodeKind kind, int index) {
+            switch (kind) {
+                case BrainGenome::NodeKind::Input:
+                    return SDL_FPoint {inputX, nodeY(index, kInputCount)};
+                case BrainGenome::NodeKind::Memory:
+                    return SDL_FPoint {memoryX, nodeY(index, kMemorySize)};
+                case BrainGenome::NodeKind::Hidden:
+                    return SDL_FPoint {hiddenX, nodeY(index, std::max(1, info.brainHiddenCount))};
+                default:
+                    return SDL_FPoint {outputX, nodeY(index, kOutputCount)};
+            }
+        };
+
+        drawText(smallFont_, graph.x + 4.0f, graph.y - 1.0f, "inputs", {112, 142, 170, 255});
+        drawText(smallFont_, memoryX - 18.0f, graph.y - 1.0f, "mem", {112, 142, 170, 255});
+        drawText(smallFont_, hiddenX - 20.0f, graph.y - 1.0f, "hidden", {112, 142, 170, 255});
+        drawText(smallFont_, outputX - 25.0f, graph.y - 1.0f, "out", {112, 142, 170, 255});
+
+        for (int connectionIndex = 0; connectionIndex < info.brainConnectionCount; ++connectionIndex) {
+            const auto& connection = info.connections[connectionIndex];
+            const SDL_FPoint start = pointForNode(connection.fromKind, connection.fromIndex);
+            const SDL_FPoint end = pointForNode(connection.toKind, connection.toIndex);
+            const float magnitude = clamp01(std::abs(connection.weight) / 2.0f);
+            const float sourceDrive = clamp01(std::abs(valueForNode(connection.fromKind, connection.fromIndex)));
+            const std::uint8_t alpha = static_cast<std::uint8_t>(28 + 118.0f * std::max(magnitude, sourceDrive * 0.75f));
+            const SDL_Color color = connection.weight >= 0.0f
+                ? SDL_Color {99, 211, 166, alpha}
+                : SDL_Color {233, 128, 104, alpha};
+            drawLine(renderer_, start, end, color);
+        }
+
+        const auto drawNode = [&](BrainGenome::NodeKind kind, int index, float radius) {
+            const float value = valueForNode(kind, index);
+            const SDL_FPoint point = pointForNode(kind, index);
+            const float normalized = kind == BrainGenome::NodeKind::Input
+                ? clamp01(value)
+                : clamp01(value * 0.5f + 0.5f);
+            const SDL_Color fill = kind == BrainGenome::NodeKind::Input
+                ? hsv(0.55f - normalized * 0.08f, 0.5f, 0.36f + normalized * 0.5f, 240)
+                : (value >= 0.0f
+                    ? SDL_Color {static_cast<std::uint8_t>(72 + normalized * 88.0f), static_cast<std::uint8_t>(140 + normalized * 80.0f), 173, 248}
+                    : SDL_Color {214, static_cast<std::uint8_t>(94 + normalized * 60.0f), static_cast<std::uint8_t>(118 + normalized * 68.0f), 248});
+            fillEllipse(renderer_, point.x, point.y, radius, radius, fill);
+            fillEllipse(renderer_, point.x, point.y, radius * 0.45f, radius * 0.45f, {239, 244, 247, 56});
+        };
+
+        for (int inputIndex = 0; inputIndex < kInputCount; ++inputIndex) {
+            drawNode(BrainGenome::NodeKind::Input, inputIndex, 2.2f);
+        }
+        for (int memoryIndex = 0; memoryIndex < kMemorySize; ++memoryIndex) {
+            drawNode(BrainGenome::NodeKind::Memory, memoryIndex, 3.2f);
+        }
+        for (int hiddenIndex = 0; hiddenIndex < info.brainHiddenCount; ++hiddenIndex) {
+            drawNode(BrainGenome::NodeKind::Hidden, hiddenIndex, 3.6f);
+        }
+        constexpr std::array<const char*, kOutputCount> overlayOutputLabels {"turn", "thrust", "graze", "bite", "sig", "split"};
+        for (int outputIndex = 0; outputIndex < kOutputCount; ++outputIndex) {
+            drawNode(BrainGenome::NodeKind::Output, outputIndex, 4.2f);
+            const SDL_FPoint point = pointForNode(BrainGenome::NodeKind::Output, outputIndex);
+            drawText(smallFont_, point.x + 8.0f, point.y - 6.0f, overlayOutputLabels[outputIndex], {210, 219, 226, 255});
+        }
+
+        fillRect(renderer_, {overlay.x, overlay.y + overlay.h - 18.0f, overlay.w, 18.0f}, {20, 28, 36, 226});
+        drawText(
+            smallFont_,
+            overlay.x + 8.0f,
+            overlay.y + overlay.h - 15.0f,
+            "green excite  red inhibit  node brightness = live activation",
+            {152, 168, 184, 255}
+        );
     };
 
     auto drawCreature = [&](const Creature& creature, bool selected) {
@@ -576,6 +720,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
             drawCreature(creature, true);
         }
     }
+    drawBrainOverlay(info);
 
     const SDL_FRect panel {
         static_cast<float>(kWindowWidth - kPanelWidth - kMargin),
@@ -591,10 +736,6 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     textY += 22.0f;
     drawText(smallFont_, panel.x + 18.0f, textY, "segmented phenotype ecology", {129, 151, 176, 255});
     textY += 34.0f;
-
-    const Stats& stats = simulation.stats();
-    const auto info = simulation.selectionInfo();
-    const auto& history = simulation.history();
 
     const SDL_FRect summaryCard {panel.x + 14.0f, textY, panel.w - 28.0f, 118.0f};
     drawCard(summaryCard, "World");
@@ -641,7 +782,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     drawText(smallFont_, ecologyCard.x + 248.0f, ecologyCard.y + 96.0f, "avg mass " + formatFloat(stats.avgMass, 1), {202, 214, 226, 255});
     textY += ecologyCard.h + 10.0f;
 
-    const SDL_FRect selectionCard {panel.x + 14.0f, textY, panel.w - 28.0f, panel.y + panel.h - textY - 88.0f};
+    const SDL_FRect selectionCard {panel.x + 14.0f, textY, panel.w - 28.0f, panel.y + panel.h - textY - 96.0f};
     drawCard(selectionCard, "Selection");
 
     if (info.valid) {
@@ -662,28 +803,30 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "slip " + formatFloat(info.bodySlip, 2) + "  curve " + formatFloat(info.bodyCurvature, 2) + "  flow " + formatFloat(info.flowAlignment, 2), {179, 194, 210, 255});
         sy += 28.0f;
-
-        drawText(smallFont_, selectionCard.x + 12.0f, sy, "controller outputs", {163, 196, 224, 255});
-        sy += 18.0f;
-        constexpr std::array<const char*, kOutputCount> outputLabels {"turn", "thrust", "graze", "bite", "signal", "split"};
-        for (int outputIndex = 0; outputIndex < kOutputCount; ++outputIndex) {
-            drawText(smallFont_, selectionCard.x + 12.0f, sy, outputLabels[outputIndex], {205, 214, 222, 255});
-            drawSignedBar(selectionCard.x + 78.0f, sy + 2.0f, selectionCard.w - 96.0f, 10.0f, info.outputs[outputIndex], {99, 211, 166, 255}, {233, 128, 104, 255});
-            sy += 16.0f;
-        }
-
-        sy += 6.0f;
-        drawText(smallFont_, selectionCard.x + 12.0f, sy, "memory state", {163, 196, 224, 255});
-        sy += 18.0f;
-        for (int memoryIndex = 0; memoryIndex < kMemorySize; ++memoryIndex) {
-            drawText(smallFont_, selectionCard.x + 12.0f, sy, "m" + std::to_string(memoryIndex + 1), {205, 214, 222, 255});
-            drawSignedBar(selectionCard.x + 78.0f, sy + 2.0f, selectionCard.w - 96.0f, 10.0f, info.memory[memoryIndex], {125, 173, 236, 255}, {200, 126, 232, 255});
-            sy += 16.0f;
-        }
-
-        sy += 6.0f;
-        drawText(smallFont_, selectionCard.x + 12.0f, sy, "sensor buckets", {163, 196, 224, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, sy, "brain h " + std::to_string(info.brainHiddenCount) + "  conn " + std::to_string(info.brainConnectionCount) + "  load " + formatFloat(info.brainComplexity, 2), {163, 196, 224, 255});
+        sy += 20.0f;
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "act t " + formatFloat(info.outputs[0], 2)
+                + "  thrust " + formatFloat(info.outputs[1], 2)
+                + "  graze " + formatFloat(info.outputs[2], 2),
+            {205, 214, 222, 255}
+        );
         sy += 16.0f;
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "bite " + formatFloat(info.outputs[3], 2)
+                + "  signal " + formatFloat(info.outputs[4], 2)
+                + "  split " + formatFloat(info.outputs[5], 2),
+            {205, 214, 222, 255}
+        );
+        sy += 20.0f;
+        drawText(smallFont_, selectionCard.x + 12.0f, sy, "sensor buckets", {163, 196, 224, 255});
+        sy += 14.0f;
         constexpr std::array<const char*, 5> sensorLabels {"plant", "carrion", "prey-op", "threat", "signal"};
         const std::array<SDL_Color, 5> sensorColors {{
             {110, 227, 170, 255},
@@ -701,19 +844,22 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         }};
         for (int sensorRow = 0; sensorRow < 5; ++sensorRow) {
             drawText(smallFont_, selectionCard.x + 12.0f, sy + 1.0f, sensorLabels[sensorRow], {205, 214, 222, 255});
-            drawBucketStrip(selectionCard.x + 78.0f, sy, selectionCard.w - 96.0f, 14.0f, sensorData[sensorRow], sensorColors[sensorRow]);
-            sy += 20.0f;
+            drawBucketStrip(selectionCard.x + 78.0f, sy, selectionCard.w - 96.0f, 12.0f, sensorData[sensorRow], sensorColors[sensorRow]);
+            sy += 17.0f;
         }
     } else {
         drawText(font_, selectionCard.x + 12.0f, selectionCard.y + 40.0f, "click a creature to inspect it", {184, 192, 201, 255});
         drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 66.0f, "selection shows body physics, chain stress proxies,", {125, 139, 155, 255});
-        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 84.0f, "controller outputs, and bucketed sensor activity.", {125, 139, 155, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 84.0f, "controller outputs, topology overlay, and sensor activity.", {125, 139, 155, 255});
     }
 
-    const SDL_FRect controlsCard {panel.x + 14.0f, panel.y + panel.h - 78.0f, panel.w - 28.0f, 78.0f};
+    const SDL_FRect controlsCard {panel.x + 14.0f, panel.y + panel.h - 86.0f, panel.w - 28.0f, 86.0f};
     drawCard(controlsCard, "Controls");
-    drawText(smallFont_, controlsCard.x + 12.0f, controlsCard.y + 36.0f, "space pause   1/2/3 speed   r reseed", {221, 228, 234, 255});
-    drawText(smallFont_, controlsCard.x + 12.0f, controlsCard.y + 54.0f, "left click inspect   c clear   esc quit", {221, 228, 234, 255});
+    randomSelectButton_ = {controlsCard.x + 12.0f, controlsCard.y + 34.0f, controlsCard.w * 0.48f - 18.0f, 22.0f};
+    topEnergyButton_ = {controlsCard.x + controlsCard.w * 0.52f, controlsCard.y + 34.0f, controlsCard.w * 0.48f - 18.0f, 22.0f};
+    drawButton(randomSelectButton_, "random subject (N)", {40, 74, 108, 255}, {227, 235, 241, 255});
+    drawButton(topEnergyButton_, "top energy (F)", {54, 98, 84, 255}, {227, 235, 241, 255});
+    drawText(smallFont_, controlsCard.x + 12.0f, controlsCard.y + 61.0f, "space pause  1/2/3 speed  r reseed  c clear  esc quit", {221, 228, 234, 255});
 
     SDL_RenderPresent(renderer_);
 }

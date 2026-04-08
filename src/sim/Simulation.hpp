@@ -22,7 +22,8 @@ constexpr int kInternalInputs = 6;
 constexpr int kMemorySize = 4;
 constexpr int kBodySegments = 4;
 constexpr int kInputCount = kSensorBuckets * kSensorChannels + kInternalInputs;
-constexpr int kMaxHiddenCount = 16;
+constexpr int kMaxHiddenCount = 20;
+constexpr int kMaxConnectionCount = 128;
 constexpr int kOutputCount = 6;
 
 enum class DietClass : std::uint8_t {
@@ -32,10 +33,25 @@ enum class DietClass : std::uint8_t {
 };
 
 struct BrainGenome {
-    int activeHidden = 12;
-    std::array<float, (kInputCount + kMemorySize) * kMaxHiddenCount> hiddenWeights {};
+    enum class NodeKind : std::uint8_t {
+        Input,
+        Memory,
+        Hidden,
+        Output
+    };
+
+    struct ConnectionGene {
+        NodeKind fromKind = NodeKind::Input;
+        std::uint8_t fromIndex = 0;
+        NodeKind toKind = NodeKind::Output;
+        std::uint8_t toIndex = 0;
+        float weight = 0.0f;
+    };
+
+    int hiddenCount = 0;
+    int connectionCount = 0;
+    std::array<ConnectionGene, kMaxConnectionCount> connections {};
     std::array<float, kMaxHiddenCount> hiddenBias {};
-    std::array<float, kMaxHiddenCount * kOutputCount> outputWeights {};
     std::array<float, kOutputCount> outputBias {};
     std::array<float, kOutputCount * kMemorySize> memoryWeights {};
     std::array<float, kMemorySize> memoryBias {};
@@ -121,6 +137,7 @@ struct Creature {
     float flowAlignment = 0.0f;
     bool alive = true;
     std::array<float, kMemorySize> memory {};
+    std::array<float, kMaxHiddenCount> hiddenActivations {};
     std::array<float, kOutputCount> outputs {};
     std::array<float, kInputCount> lastInputs {};
     std::array<Vec2, kBodySegments> bodyPoints {};
@@ -197,6 +214,12 @@ struct SelectionInfo {
     float bodyCurvature = 0.0f;
     float bodySlip = 0.0f;
     float flowAlignment = 0.0f;
+    int brainHiddenCount = 0;
+    int brainConnectionCount = 0;
+    float brainComplexity = 0.0f;
+    std::array<float, kInputCount> inputs {};
+    std::array<float, kMaxHiddenCount> hiddenActivations {};
+    std::array<BrainGenome::ConnectionGene, kMaxConnectionCount> connections {};
     std::array<float, kOutputCount> outputs {};
     std::array<float, kMemorySize> memory {};
     std::array<float, kSensorBuckets> plantSense {};
@@ -216,6 +239,8 @@ public:
     void setSelectedCreature(std::uint64_t id);
     void clearSelection();
     std::uint64_t selectedCreature() const;
+    bool selectRandomCreature();
+    bool selectTopEnergyCreature();
 
     std::optional<std::uint64_t> creatureAt(float worldX, float worldY, float radius) const;
     SelectionInfo selectionInfo() const;
@@ -239,6 +264,7 @@ private:
     std::uint64_t seed_ = 1;
     std::uint64_t nextCreatureId_ = 1;
     std::uint64_t selectedCreatureId_ = 0;
+    bool autoSelectionEnabled_ = true;
     Stats stats_ {};
     float historyAccumulator_ = 0.0f;
     Genome ancestorGenome_ {};

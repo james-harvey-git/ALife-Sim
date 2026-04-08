@@ -18,6 +18,9 @@ constexpr std::size_t kTargetBlooms = 220;
 constexpr float kBloomRespawnChance = 1.75f;
 constexpr float kSpatialCellSize = 120.0f;
 
+using NodeKind = BrainGenome::NodeKind;
+using ConnectionGene = BrainGenome::ConnectionGene;
+
 float clamp01(float value) {
     return std::clamp(value, 0.0f, 1.0f);
 }
@@ -157,6 +160,12 @@ DietClass classifyDiet(const Genome& genome) {
     return DietClass::Omnivore;
 }
 
+float brainComplexityScore(const BrainGenome& brain) {
+    const float hiddenLoad = static_cast<float>(brain.hiddenCount) / static_cast<float>(kMaxHiddenCount);
+    const float connectionLoad = static_cast<float>(brain.connectionCount) / static_cast<float>(kMaxConnectionCount);
+    return 1.0f + hiddenLoad * 0.8f + connectionLoad * 1.2f;
+}
+
 Traits deriveTraits(const Genome& genome) {
     Traits traits {};
 
@@ -202,7 +211,7 @@ Traits deriveTraits(const Genome& genome) {
     traits.sensorSpan = lerp(1.6f, 4.7f, genome.morphology.sensorSpan);
     traits.signalRange = traits.sensorRange * lerp(0.45f, 0.95f, genome.ecology.sociality);
 
-    const float brainComplexity = 1.0f + static_cast<float>(genome.brain.activeHidden) / static_cast<float>(kMaxHiddenCount);
+    const float brainComplexity = brainComplexityScore(genome.brain);
     traits.upkeep = 0.85f + traits.mass * 0.04f + traits.sensorRange * 0.008f
         + genome.morphology.armor * 0.65f + brainComplexity * 0.55f;
     traits.reproductionThreshold = 42.0f + traits.mass * 0.45f + genome.ecology.reproductionBias * 24.0f;
@@ -211,6 +220,303 @@ Traits deriveTraits(const Genome& genome) {
     traits.carrionYield = traits.mass * 1.7f + traits.maxHealth * 0.36f;
 
     return traits;
+}
+
+bool connectionExists(
+    const BrainGenome& brain,
+    NodeKind fromKind,
+    int fromIndex,
+    NodeKind toKind,
+    int toIndex
+) {
+    for (int index = 0; index < brain.connectionCount; ++index) {
+        const ConnectionGene& connection = brain.connections[index];
+        if (connection.fromKind == fromKind
+            && connection.fromIndex == fromIndex
+            && connection.toKind == toKind
+            && connection.toIndex == toIndex) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool canConnect(
+    const BrainGenome& brain,
+    NodeKind fromKind,
+    int fromIndex,
+    NodeKind toKind,
+    int toIndex
+) {
+    if (fromIndex < 0 || toIndex < 0) {
+        return false;
+    }
+    if (fromKind == NodeKind::Output || toKind == NodeKind::Input || toKind == NodeKind::Memory) {
+        return false;
+    }
+    if (fromKind == NodeKind::Input && fromIndex >= kInputCount) {
+        return false;
+    }
+    if (fromKind == NodeKind::Memory && fromIndex >= kMemorySize) {
+        return false;
+    }
+    if (fromKind == NodeKind::Hidden && fromIndex >= brain.hiddenCount) {
+        return false;
+    }
+    if (toKind == NodeKind::Hidden && toIndex >= brain.hiddenCount) {
+        return false;
+    }
+    if (toKind == NodeKind::Output && toIndex >= kOutputCount) {
+        return false;
+    }
+    if (toKind == NodeKind::Hidden && fromKind == NodeKind::Hidden && fromIndex >= toIndex) {
+        return false;
+    }
+    return !connectionExists(brain, fromKind, fromIndex, toKind, toIndex);
+}
+
+void appendConnection(
+    BrainGenome& brain,
+    NodeKind fromKind,
+    int fromIndex,
+    NodeKind toKind,
+    int toIndex,
+    float weight
+) {
+    if (brain.connectionCount >= kMaxConnectionCount || !canConnect(brain, fromKind, fromIndex, toKind, toIndex)) {
+        return;
+    }
+
+    brain.connections[brain.connectionCount++] = ConnectionGene {
+        .fromKind = fromKind,
+        .fromIndex = static_cast<std::uint8_t>(fromIndex),
+        .toKind = toKind,
+        .toIndex = static_cast<std::uint8_t>(toIndex),
+        .weight = weight
+    };
+}
+
+void removeConnection(BrainGenome& brain, int connectionIndex) {
+    if (connectionIndex < 0 || connectionIndex >= brain.connectionCount) {
+        return;
+    }
+    const int lastIndex = brain.connectionCount - 1;
+    brain.connections[connectionIndex] = brain.connections[lastIndex];
+    brain.connections[lastIndex] = ConnectionGene {};
+    --brain.connectionCount;
+}
+
+void compactBrain(BrainGenome& brain) {
+    std::array<bool, kMaxHiddenCount> keepHidden {};
+    for (int index = 0; index < brain.connectionCount; ++index) {
+        const ConnectionGene& connection = brain.connections[index];
+        if (connection.fromKind == NodeKind::Hidden && connection.fromIndex < brain.hiddenCount) {
+            keepHidden[connection.fromIndex] = true;
+        }
+    }
+
+    std::array<int, kMaxHiddenCount> remap {};
+    remap.fill(-1);
+    std::array<float, kMaxHiddenCount> newBias {};
+    int newHiddenCount = 0;
+    for (int hiddenIndex = 0; hiddenIndex < brain.hiddenCount; ++hiddenIndex) {
+        if (!keepHidden[hiddenIndex]) {
+            continue;
+        }
+        remap[hiddenIndex] = newHiddenCount;
+        newBias[newHiddenCount] = brain.hiddenBias[hiddenIndex];
+        ++newHiddenCount;
+    }
+
+    std::array<ConnectionGene, kMaxConnectionCount> newConnections {};
+    int newConnectionCount = 0;
+    for (int index = 0; index < brain.connectionCount; ++index) {
+        ConnectionGene connection = brain.connections[index];
+        if (connection.fromKind == NodeKind::Hidden) {
+            if (connection.fromIndex >= brain.hiddenCount || remap[connection.fromIndex] < 0) {
+                continue;
+            }
+            connection.fromIndex = static_cast<std::uint8_t>(remap[connection.fromIndex]);
+        }
+        if (connection.toKind == NodeKind::Hidden) {
+            if (connection.toIndex >= brain.hiddenCount || remap[connection.toIndex] < 0) {
+                continue;
+            }
+            connection.toIndex = static_cast<std::uint8_t>(remap[connection.toIndex]);
+        }
+        if (connection.toKind == NodeKind::Hidden
+            && connection.fromKind == NodeKind::Hidden
+            && connection.fromIndex >= connection.toIndex) {
+            continue;
+        }
+
+        bool duplicate = false;
+        for (int priorIndex = 0; priorIndex < newConnectionCount; ++priorIndex) {
+            const ConnectionGene& prior = newConnections[priorIndex];
+            if (prior.fromKind == connection.fromKind
+                && prior.fromIndex == connection.fromIndex
+                && prior.toKind == connection.toKind
+                && prior.toIndex == connection.toIndex) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) {
+            continue;
+        }
+
+        newConnections[newConnectionCount++] = connection;
+    }
+
+    brain.hiddenCount = newHiddenCount;
+    brain.hiddenBias = newBias;
+    brain.connectionCount = newConnectionCount;
+    brain.connections = newConnections;
+}
+
+bool addRandomConnection(BrainGenome& brain, std::mt19937_64& rng, float volatility) {
+    if (brain.connectionCount >= kMaxConnectionCount) {
+        return false;
+    }
+
+    std::vector<ConnectionGene> candidates;
+    candidates.reserve((kInputCount + kMemorySize + kMaxHiddenCount) * (kOutputCount + kMaxHiddenCount));
+
+    for (int outputIndex = 0; outputIndex < kOutputCount; ++outputIndex) {
+        for (int inputIndex = 0; inputIndex < kInputCount; ++inputIndex) {
+            if (canConnect(brain, NodeKind::Input, inputIndex, NodeKind::Output, outputIndex)) {
+                candidates.push_back(ConnectionGene {
+                    .fromKind = NodeKind::Input,
+                    .fromIndex = static_cast<std::uint8_t>(inputIndex),
+                    .toKind = NodeKind::Output,
+                    .toIndex = static_cast<std::uint8_t>(outputIndex)
+                });
+            }
+        }
+        for (int memoryIndex = 0; memoryIndex < kMemorySize; ++memoryIndex) {
+            if (canConnect(brain, NodeKind::Memory, memoryIndex, NodeKind::Output, outputIndex)) {
+                candidates.push_back(ConnectionGene {
+                    .fromKind = NodeKind::Memory,
+                    .fromIndex = static_cast<std::uint8_t>(memoryIndex),
+                    .toKind = NodeKind::Output,
+                    .toIndex = static_cast<std::uint8_t>(outputIndex)
+                });
+            }
+        }
+        for (int hiddenIndex = 0; hiddenIndex < brain.hiddenCount; ++hiddenIndex) {
+            if (canConnect(brain, NodeKind::Hidden, hiddenIndex, NodeKind::Output, outputIndex)) {
+                candidates.push_back(ConnectionGene {
+                    .fromKind = NodeKind::Hidden,
+                    .fromIndex = static_cast<std::uint8_t>(hiddenIndex),
+                    .toKind = NodeKind::Output,
+                    .toIndex = static_cast<std::uint8_t>(outputIndex)
+                });
+            }
+        }
+    }
+
+    for (int hiddenIndex = 0; hiddenIndex < brain.hiddenCount; ++hiddenIndex) {
+        for (int inputIndex = 0; inputIndex < kInputCount; ++inputIndex) {
+            if (canConnect(brain, NodeKind::Input, inputIndex, NodeKind::Hidden, hiddenIndex)) {
+                candidates.push_back(ConnectionGene {
+                    .fromKind = NodeKind::Input,
+                    .fromIndex = static_cast<std::uint8_t>(inputIndex),
+                    .toKind = NodeKind::Hidden,
+                    .toIndex = static_cast<std::uint8_t>(hiddenIndex)
+                });
+            }
+        }
+        for (int memoryIndex = 0; memoryIndex < kMemorySize; ++memoryIndex) {
+            if (canConnect(brain, NodeKind::Memory, memoryIndex, NodeKind::Hidden, hiddenIndex)) {
+                candidates.push_back(ConnectionGene {
+                    .fromKind = NodeKind::Memory,
+                    .fromIndex = static_cast<std::uint8_t>(memoryIndex),
+                    .toKind = NodeKind::Hidden,
+                    .toIndex = static_cast<std::uint8_t>(hiddenIndex)
+                });
+            }
+        }
+        for (int sourceHidden = 0; sourceHidden < hiddenIndex; ++sourceHidden) {
+            if (canConnect(brain, NodeKind::Hidden, sourceHidden, NodeKind::Hidden, hiddenIndex)) {
+                candidates.push_back(ConnectionGene {
+                    .fromKind = NodeKind::Hidden,
+                    .fromIndex = static_cast<std::uint8_t>(sourceHidden),
+                    .toKind = NodeKind::Hidden,
+                    .toIndex = static_cast<std::uint8_t>(hiddenIndex)
+                });
+            }
+        }
+    }
+
+    if (candidates.empty()) {
+        return false;
+    }
+
+    const ConnectionGene& candidate = candidates[static_cast<std::size_t>(randomInt(rng, 0, static_cast<int>(candidates.size()) - 1))];
+    appendConnection(
+        brain,
+        candidate.fromKind,
+        candidate.fromIndex,
+        candidate.toKind,
+        candidate.toIndex,
+        randomFloat(rng, -1.25f, 1.25f) * (0.75f + volatility * 0.35f)
+    );
+    return true;
+}
+
+bool addRandomHidden(BrainGenome& brain, std::mt19937_64& rng) {
+    if (brain.hiddenCount >= kMaxHiddenCount || brain.connectionCount >= kMaxConnectionCount) {
+        return false;
+    }
+
+    std::vector<int> splittableConnections;
+    for (int index = 0; index < brain.connectionCount; ++index) {
+        if (brain.connections[index].toKind == NodeKind::Output) {
+            splittableConnections.push_back(index);
+        }
+    }
+    if (splittableConnections.empty()) {
+        return false;
+    }
+
+    const int splitIndex = splittableConnections[static_cast<std::size_t>(randomInt(rng, 0, static_cast<int>(splittableConnections.size()) - 1))];
+    const ConnectionGene original = brain.connections[splitIndex];
+    const int newHiddenIndex = brain.hiddenCount++;
+    brain.hiddenBias[newHiddenIndex] = randomFloat(rng, -0.12f, 0.12f);
+    brain.connections[splitIndex] = ConnectionGene {
+        .fromKind = original.fromKind,
+        .fromIndex = original.fromIndex,
+        .toKind = NodeKind::Hidden,
+        .toIndex = static_cast<std::uint8_t>(newHiddenIndex),
+        .weight = 1.0f
+    };
+    appendConnection(
+        brain,
+        NodeKind::Hidden,
+        newHiddenIndex,
+        NodeKind::Output,
+        original.toIndex,
+        original.weight
+    );
+    return true;
+}
+
+float sourceNodeValue(
+    const Creature& creature,
+    const std::array<float, kInputCount>& inputs,
+    NodeKind kind,
+    int index
+) {
+    switch (kind) {
+        case NodeKind::Input:
+            return inputs[index];
+        case NodeKind::Memory:
+            return creature.memory[index];
+        case NodeKind::Hidden:
+            return creature.hiddenActivations[index];
+        default:
+            return creature.outputs[index];
+    }
 }
 
 Genome makeAncestorGenome(std::mt19937_64& rng) {
@@ -238,16 +544,8 @@ Genome makeAncestorGenome(std::mt19937_64& rng) {
     genome.ecology.mutationVolatility = 0.34f;
     genome.ecology.scavengerBias = 0.38f;
 
-    genome.brain.activeHidden = 12;
-
-    for (float& value : genome.brain.hiddenWeights) {
-        value = randomFloat(rng, -0.08f, 0.08f);
-    }
     for (float& value : genome.brain.hiddenBias) {
         value = 0.0f;
-    }
-    for (float& value : genome.brain.outputWeights) {
-        value = randomFloat(rng, -0.06f, 0.06f);
     }
     for (float& value : genome.brain.outputBias) {
         value = 0.0f;
@@ -259,78 +557,73 @@ Genome makeAncestorGenome(std::mt19937_64& rng) {
         value = 0.0f;
     }
 
-    genome.brain.activeHidden = 8;
-    const auto hiddenSlot = [](int hiddenIndex, int inputIndex) {
-        return hiddenIndex * (kInputCount + kMemorySize) + inputIndex;
-    };
-    const auto outputSlot = [](int hiddenIndex, int outputIndex) {
-        return hiddenIndex * kOutputCount + outputIndex;
-    };
+    genome.brain.hiddenCount = 8;
 
-    genome.brain.hiddenWeights[hiddenSlot(0, 10)] = 2.4f;
-    genome.brain.hiddenWeights[hiddenSlot(0, 29)] = 1.0f;
+    appendConnection(genome.brain, NodeKind::Input, 10, NodeKind::Hidden, 0, 2.4f);
+    appendConnection(genome.brain, NodeKind::Input, 29, NodeKind::Hidden, 0, 1.0f);
     genome.brain.hiddenBias[0] = -0.15f;
 
-    genome.brain.hiddenWeights[hiddenSlot(1, 0)] = 1.7f;
-    genome.brain.hiddenWeights[hiddenSlot(1, 5)] = 1.8f;
+    appendConnection(genome.brain, NodeKind::Input, 0, NodeKind::Hidden, 1, 1.7f);
+    appendConnection(genome.brain, NodeKind::Input, 5, NodeKind::Hidden, 1, 1.8f);
     genome.brain.hiddenBias[1] = -0.25f;
 
-    genome.brain.hiddenWeights[hiddenSlot(2, 15)] = 1.8f;
-    genome.brain.hiddenWeights[hiddenSlot(2, 20)] = 1.7f;
+    appendConnection(genome.brain, NodeKind::Input, 15, NodeKind::Hidden, 2, 1.8f);
+    appendConnection(genome.brain, NodeKind::Input, 20, NodeKind::Hidden, 2, 1.7f);
     genome.brain.hiddenBias[2] = -0.25f;
 
-    genome.brain.hiddenWeights[hiddenSlot(3, 25)] = -2.2f;
+    appendConnection(genome.brain, NodeKind::Input, 25, NodeKind::Hidden, 3, -2.2f);
     genome.brain.hiddenBias[3] = 0.95f;
 
-    genome.brain.hiddenWeights[hiddenSlot(4, 11)] = 1.7f;
-    genome.brain.hiddenWeights[hiddenSlot(4, 12)] = 2.0f;
-    genome.brain.hiddenWeights[hiddenSlot(4, 16)] = 1.1f;
-    genome.brain.hiddenWeights[hiddenSlot(4, 17)] = 1.2f;
+    appendConnection(genome.brain, NodeKind::Input, 11, NodeKind::Hidden, 4, 1.7f);
+    appendConnection(genome.brain, NodeKind::Input, 12, NodeKind::Hidden, 4, 2.0f);
+    appendConnection(genome.brain, NodeKind::Input, 16, NodeKind::Hidden, 4, 1.1f);
+    appendConnection(genome.brain, NodeKind::Input, 17, NodeKind::Hidden, 4, 1.2f);
     genome.brain.hiddenBias[4] = -0.35f;
 
-    genome.brain.hiddenWeights[hiddenSlot(5, 3)] = 1.8f;
-    genome.brain.hiddenWeights[hiddenSlot(5, 8)] = 1.4f;
+    appendConnection(genome.brain, NodeKind::Input, 3, NodeKind::Hidden, 5, 1.8f);
+    appendConnection(genome.brain, NodeKind::Input, 8, NodeKind::Hidden, 5, 1.4f);
     genome.brain.hiddenBias[5] = -0.3f;
 
-    genome.brain.hiddenWeights[hiddenSlot(6, 18)] = 1.4f;
-    genome.brain.hiddenWeights[hiddenSlot(6, 23)] = 1.8f;
+    appendConnection(genome.brain, NodeKind::Input, 18, NodeKind::Hidden, 6, 1.4f);
+    appendConnection(genome.brain, NodeKind::Input, 23, NodeKind::Hidden, 6, 1.8f);
     genome.brain.hiddenBias[6] = -0.3f;
 
-    genome.brain.hiddenWeights[hiddenSlot(7, 25)] = 2.4f;
-    genome.brain.hiddenWeights[hiddenSlot(7, 26)] = 0.8f;
-    genome.brain.hiddenWeights[hiddenSlot(7, 27)] = 1.8f;
+    appendConnection(genome.brain, NodeKind::Input, 25, NodeKind::Hidden, 7, 2.4f);
+    appendConnection(genome.brain, NodeKind::Input, 26, NodeKind::Hidden, 7, 0.8f);
+    appendConnection(genome.brain, NodeKind::Input, 27, NodeKind::Hidden, 7, 1.8f);
     genome.brain.hiddenBias[7] = -1.7f;
 
-    genome.brain.outputWeights[outputSlot(1, 0)] = 1.0f;
-    genome.brain.outputWeights[outputSlot(2, 0)] = -1.0f;
-    genome.brain.outputWeights[outputSlot(5, 0)] = 0.75f;
-    genome.brain.outputWeights[outputSlot(6, 0)] = -0.75f;
+    appendConnection(genome.brain, NodeKind::Hidden, 1, NodeKind::Output, 0, 1.0f);
+    appendConnection(genome.brain, NodeKind::Hidden, 2, NodeKind::Output, 0, -1.0f);
+    appendConnection(genome.brain, NodeKind::Hidden, 5, NodeKind::Output, 0, 0.75f);
+    appendConnection(genome.brain, NodeKind::Hidden, 6, NodeKind::Output, 0, -0.75f);
     genome.brain.outputBias[0] = 0.05f;
 
-    genome.brain.outputWeights[outputSlot(0, 1)] = 1.3f;
-    genome.brain.outputWeights[outputSlot(1, 1)] = 0.6f;
-    genome.brain.outputWeights[outputSlot(2, 1)] = 0.6f;
-    genome.brain.outputWeights[outputSlot(3, 1)] = 1.0f;
-    genome.brain.outputWeights[outputSlot(5, 1)] = -0.55f;
-    genome.brain.outputWeights[outputSlot(6, 1)] = -0.55f;
+    appendConnection(genome.brain, NodeKind::Hidden, 0, NodeKind::Output, 1, 1.3f);
+    appendConnection(genome.brain, NodeKind::Hidden, 1, NodeKind::Output, 1, 0.6f);
+    appendConnection(genome.brain, NodeKind::Hidden, 2, NodeKind::Output, 1, 0.6f);
+    appendConnection(genome.brain, NodeKind::Hidden, 3, NodeKind::Output, 1, 1.0f);
+    appendConnection(genome.brain, NodeKind::Hidden, 5, NodeKind::Output, 1, -0.55f);
+    appendConnection(genome.brain, NodeKind::Hidden, 6, NodeKind::Output, 1, -0.55f);
     genome.brain.outputBias[1] = 0.2f;
 
-    genome.brain.outputWeights[outputSlot(0, 2)] = 1.4f;
-    genome.brain.outputWeights[outputSlot(1, 2)] = 0.7f;
-    genome.brain.outputWeights[outputSlot(2, 2)] = 0.7f;
-    genome.brain.outputWeights[outputSlot(3, 2)] = 0.7f;
+    appendConnection(genome.brain, NodeKind::Hidden, 0, NodeKind::Output, 2, 1.4f);
+    appendConnection(genome.brain, NodeKind::Hidden, 1, NodeKind::Output, 2, 0.7f);
+    appendConnection(genome.brain, NodeKind::Hidden, 2, NodeKind::Output, 2, 0.7f);
+    appendConnection(genome.brain, NodeKind::Hidden, 3, NodeKind::Output, 2, 0.7f);
     genome.brain.outputBias[2] = 0.35f;
 
-    genome.brain.outputWeights[outputSlot(4, 3)] = 1.4f;
+    appendConnection(genome.brain, NodeKind::Hidden, 4, NodeKind::Output, 3, 1.4f);
     genome.brain.outputBias[3] = -0.55f;
 
-    genome.brain.outputWeights[outputSlot(5, 4)] = 0.9f;
-    genome.brain.outputWeights[outputSlot(6, 4)] = 0.9f;
+    appendConnection(genome.brain, NodeKind::Hidden, 5, NodeKind::Output, 4, 0.9f);
+    appendConnection(genome.brain, NodeKind::Hidden, 6, NodeKind::Output, 4, 0.9f);
     genome.brain.outputBias[4] = -0.6f;
 
-    genome.brain.outputWeights[outputSlot(7, 5)] = 1.8f;
+    appendConnection(genome.brain, NodeKind::Hidden, 7, NodeKind::Output, 5, 1.8f);
     genome.brain.outputBias[5] = -0.12f;
 
+    compactBrain(genome.brain);
     return genome;
 }
 
@@ -366,17 +659,14 @@ Genome mutateGenome(const Genome& parent, std::mt19937_64& rng) {
     mutateScalar(rng, volatility, child.ecology.scavengerBias);
 
     const float weightMutationChance = 0.035f + volatility * 0.075f;
-    for (float& value : child.brain.hiddenWeights) {
-        if (randomFloat(rng, 0.0f, 1.0f) < weightMutationChance) {
-            value = std::clamp(value + randomFloat(rng, -0.55f, 0.55f), -2.0f, 2.0f);
-        }
-    }
-    for (float& value : child.brain.outputWeights) {
+    for (int index = 0; index < child.brain.connectionCount; ++index) {
+        float& value = child.brain.connections[index].weight;
         if (randomFloat(rng, 0.0f, 1.0f) < weightMutationChance) {
             value = std::clamp(value + randomFloat(rng, -0.65f, 0.65f), -2.0f, 2.0f);
         }
     }
-    for (float& value : child.brain.hiddenBias) {
+    for (int hiddenIndex = 0; hiddenIndex < child.brain.hiddenCount; ++hiddenIndex) {
+        float& value = child.brain.hiddenBias[hiddenIndex];
         if (randomFloat(rng, 0.0f, 1.0f) < weightMutationChance * 0.8f) {
             value = std::clamp(value + randomFloat(rng, -0.2f, 0.2f), -1.2f, 1.2f);
         }
@@ -397,11 +687,17 @@ Genome mutateGenome(const Genome& parent, std::mt19937_64& rng) {
         }
     }
 
-    if (randomFloat(rng, 0.0f, 1.0f) < 0.08f + volatility * 0.1f) {
-        child.brain.activeHidden += randomInt(rng, -1, 1);
-        child.brain.activeHidden = std::clamp(child.brain.activeHidden, 6, kMaxHiddenCount);
+    if (randomFloat(rng, 0.0f, 1.0f) < 0.05f + volatility * 0.09f) {
+        addRandomConnection(child.brain, rng, volatility);
+    }
+    if (randomFloat(rng, 0.0f, 1.0f) < 0.018f + volatility * 0.05f) {
+        addRandomHidden(child.brain, rng);
+    }
+    if (child.brain.connectionCount > 10 && randomFloat(rng, 0.0f, 1.0f) < 0.016f + volatility * 0.035f) {
+        removeConnection(child.brain, randomInt(rng, 0, child.brain.connectionCount - 1));
     }
 
+    compactBrain(child.brain);
     return child;
 }
 
@@ -488,28 +784,29 @@ float outputDrive(float rawOutput) {
 }
 
 void forwardBrain(const Genome& genome, Creature& creature, const std::array<float, kInputCount>& inputs) {
-    std::array<float, kMaxHiddenCount> hidden {};
     std::array<float, kMemorySize> nextMemory {};
+    creature.hiddenActivations.fill(0.0f);
 
-    for (int hiddenIndex = 0; hiddenIndex < genome.brain.activeHidden; ++hiddenIndex) {
+    for (int hiddenIndex = 0; hiddenIndex < genome.brain.hiddenCount; ++hiddenIndex) {
         float sum = genome.brain.hiddenBias[hiddenIndex];
-        const int hiddenOffset = hiddenIndex * (kInputCount + kMemorySize);
-
-        for (int inputIndex = 0; inputIndex < kInputCount; ++inputIndex) {
-            sum += inputs[inputIndex] * genome.brain.hiddenWeights[hiddenOffset + inputIndex];
+        for (int connectionIndex = 0; connectionIndex < genome.brain.connectionCount; ++connectionIndex) {
+            const ConnectionGene& connection = genome.brain.connections[connectionIndex];
+            if (connection.toKind != NodeKind::Hidden || connection.toIndex != hiddenIndex) {
+                continue;
+            }
+            sum += sourceNodeValue(creature, inputs, connection.fromKind, connection.fromIndex) * connection.weight;
         }
-        for (int memoryIndex = 0; memoryIndex < kMemorySize; ++memoryIndex) {
-            sum += creature.memory[memoryIndex]
-                * genome.brain.hiddenWeights[hiddenOffset + kInputCount + memoryIndex];
-        }
-
-        hidden[hiddenIndex] = std::tanh(sum);
+        creature.hiddenActivations[hiddenIndex] = std::tanh(sum);
     }
 
     for (int outputIndex = 0; outputIndex < kOutputCount; ++outputIndex) {
         float sum = genome.brain.outputBias[outputIndex];
-        for (int hiddenIndex = 0; hiddenIndex < genome.brain.activeHidden; ++hiddenIndex) {
-            sum += hidden[hiddenIndex] * genome.brain.outputWeights[hiddenIndex * kOutputCount + outputIndex];
+        for (int connectionIndex = 0; connectionIndex < genome.brain.connectionCount; ++connectionIndex) {
+            const ConnectionGene& connection = genome.brain.connections[connectionIndex];
+            if (connection.toKind != NodeKind::Output || connection.toIndex != outputIndex) {
+                continue;
+            }
+            sum += sourceNodeValue(creature, inputs, connection.fromKind, connection.fromIndex) * connection.weight;
         }
         creature.outputs[outputIndex] = std::tanh(sum);
     }
@@ -746,6 +1043,7 @@ void Simulation::reset(std::uint64_t seed) {
     rng_.seed(seed_);
     nextCreatureId_ = 1;
     selectedCreatureId_ = 0;
+    autoSelectionEnabled_ = true;
     timeSeconds_ = 0.0f;
     historyAccumulator_ = 0.0f;
     stats_ = {};
@@ -785,18 +1083,53 @@ void Simulation::reset(std::uint64_t seed) {
         bloom.regrowthRate = randomFloat(rng_, 5.0f, 14.0f);
         blooms_.push_back(bloom);
     }
+
+    selectRandomCreature();
 }
 
 void Simulation::setSelectedCreature(std::uint64_t id) {
     selectedCreatureId_ = id;
+    autoSelectionEnabled_ = true;
 }
 
 void Simulation::clearSelection() {
     selectedCreatureId_ = 0;
+    autoSelectionEnabled_ = false;
 }
 
 std::uint64_t Simulation::selectedCreature() const {
     return selectedCreatureId_;
+}
+
+bool Simulation::selectRandomCreature() {
+    if (creatures_.empty()) {
+        selectedCreatureId_ = 0;
+        return false;
+    }
+
+    const int index = randomInt(rng_, 0, static_cast<int>(creatures_.size()) - 1);
+    selectedCreatureId_ = creatures_[static_cast<std::size_t>(index)].id;
+    autoSelectionEnabled_ = true;
+    return true;
+}
+
+bool Simulation::selectTopEnergyCreature() {
+    if (creatures_.empty()) {
+        selectedCreatureId_ = 0;
+        return false;
+    }
+
+    const auto it = std::max_element(creatures_.begin(), creatures_.end(), [](const Creature& lhs, const Creature& rhs) {
+        return lhs.energy < rhs.energy;
+    });
+    if (it == creatures_.end()) {
+        selectedCreatureId_ = 0;
+        return false;
+    }
+
+    selectedCreatureId_ = it->id;
+    autoSelectionEnabled_ = true;
+    return true;
 }
 
 const std::vector<Creature>& Simulation::creatures() const {
@@ -900,6 +1233,12 @@ SelectionInfo Simulation::selectionInfo() const {
     info.bodyCurvature = it->bodyCurvature;
     info.bodySlip = it->bodySlip;
     info.flowAlignment = it->flowAlignment;
+    info.brainHiddenCount = it->genome.brain.hiddenCount;
+    info.brainConnectionCount = it->genome.brain.connectionCount;
+    info.brainComplexity = brainComplexityScore(it->genome.brain);
+    info.inputs = it->lastInputs;
+    info.hiddenActivations = it->hiddenActivations;
+    info.connections = it->genome.brain.connections;
     info.outputs = it->outputs;
     info.memory = it->memory;
 
@@ -1376,6 +1715,10 @@ void Simulation::step(float dt) {
         ++stats_.deaths;
         creatures_[index] = creatures_.back();
         creatures_.pop_back();
+    }
+
+    if (autoSelectionEnabled_ && selectedCreatureId_ == 0 && !creatures_.empty()) {
+        selectTopEnergyCreature();
     }
 
     if (creatures_.empty()) {
