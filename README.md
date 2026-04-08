@@ -95,6 +95,18 @@ Run a longer headless probe:
 ./build/alife_sim --smoke-test --seed 2 --smoke-steps 10800
 ```
 
+Run a multi-seed batch probe:
+
+```bash
+./build/alife_sim --batch-run --seed 1 --batch-count 5 --smoke-steps 10800
+```
+
+Emit machine-readable JSONL summaries for offline analysis:
+
+```bash
+./build/alife_sim --batch-run --seed 1 --batch-count 5 --smoke-steps 10800 --report-format jsonl
+```
+
 ## Repo Layout
 
 - `src/sim`: simulation state, genomes, physics, and ecology

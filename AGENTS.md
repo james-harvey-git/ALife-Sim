@@ -113,6 +113,8 @@ Run headless smoke tests:
 ./build/alife_sim --smoke-test --seed 2
 ./build/alife_sim --smoke-test --seed 3
 ./build/alife_sim --smoke-test --seed 2 --smoke-steps 10800
+./build/alife_sim --batch-run --seed 1 --batch-count 5 --smoke-steps 10800
+./build/alife_sim --batch-run --seed 1 --batch-count 5 --smoke-steps 10800 --report-format jsonl
 ```
 
 Use multiple seeds when changing simulation dynamics.
