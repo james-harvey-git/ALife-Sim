@@ -164,7 +164,12 @@ Traits deriveTraits(const Genome& genome) {
 
     traits.majorRadius = coreRadius * elongation;
     traits.minorRadius = coreRadius / lerp(1.0f, 1.32f, genome.morphology.elongation);
-    traits.collisionRadius = std::max(traits.majorRadius, traits.minorRadius) + spikeBonus * 0.25f;
+    traits.finSpan = traits.minorRadius * lerp(0.7f, 1.65f, genome.morphology.finArea);
+    traits.segmentSpacing = lerp(7.0f, 15.0f, genome.morphology.elongation) * (0.9f + genome.morphology.coreSize * 0.45f);
+    traits.tailWaveAmplitude = lerp(0.05f, 0.42f, genome.morphology.tailFlex)
+        * (0.65f + genome.morphology.finArea * 0.5f);
+    const float bodyCoverage = traits.majorRadius + traits.segmentSpacing * static_cast<float>(kBodySegments - 1);
+    traits.collisionRadius = bodyCoverage * 0.58f + spikeBonus * 0.25f;
 
     const float bodyArea = traits.majorRadius * traits.minorRadius * kPi;
     traits.mass = (bodyArea * 0.07f + 10.0f) * (0.9f + 0.45f * armorBonus);
@@ -519,6 +524,35 @@ void forwardBrain(const Genome& genome, Creature& creature, const std::array<flo
     }
 }
 
+void rebuildBodyPose(Creature& creature, float worldWidth, float worldHeight) {
+    creature.bodyPoints[0] = creature.position;
+
+    const float headRadius = creature.traits.minorRadius * lerp(0.86f, 1.12f, creature.genome.morphology.jawLength);
+    creature.bodyRadii[0] = headRadius;
+
+    for (int segmentIndex = 1; segmentIndex < kBodySegments; ++segmentIndex) {
+        const float t = static_cast<float>(segmentIndex) / static_cast<float>(kBodySegments - 1);
+        const float sway = std::sin(creature.gaitPhase - t * 1.3f) * creature.traits.tailWaveAmplitude * t;
+        const Vec2 direction {std::cos(creature.angle + sway), std::sin(creature.angle + sway)};
+        const float spacing = creature.traits.segmentSpacing * lerp(0.92f, 1.18f, t);
+        creature.bodyPoints[segmentIndex] = wrapPosition(
+            creature.bodyPoints[segmentIndex - 1] - direction * spacing,
+            worldWidth,
+            worldHeight
+        );
+        creature.bodyRadii[segmentIndex] = lerp(
+            creature.traits.minorRadius * 0.95f,
+            creature.traits.minorRadius * 0.26f,
+            t
+        );
+    }
+}
+
+Vec2 mouthPosition(const Creature& creature) {
+    const Vec2 forward {std::cos(creature.angle), std::sin(creature.angle)};
+    return creature.bodyPoints[0] + forward * (creature.traits.biteReach * 0.55f);
+}
+
 Creature makeCreature(
     std::mt19937_64& rng,
     std::uint64_t id,
@@ -543,6 +577,8 @@ Creature makeCreature(
     creature.health = creature.traits.maxHealth;
     creature.age = randomFloat(rng, 0.0f, 20.0f);
     creature.signal = 0.0f;
+    creature.gaitPhase = randomFloat(rng, 0.0f, kTau);
+    rebuildBodyPose(creature, worldWidth, worldHeight);
     return creature;
 }
 
@@ -570,12 +606,14 @@ void Simulation::reset(std::uint64_t seed) {
     nextCreatureId_ = 1;
     selectedCreatureId_ = 0;
     timeSeconds_ = 0.0f;
+    historyAccumulator_ = 0.0f;
     stats_ = {};
     stats_.extinctions = priorExtinctions;
 
     creatures_.clear();
     blooms_.clear();
     carrion_.clear();
+    history_.clear();
 
     ancestorGenome_ = makeAncestorGenome(rng_);
 
@@ -632,6 +670,10 @@ const std::vector<Carrion>& Simulation::carrion() const {
     return carrion_;
 }
 
+const std::deque<HistorySample>& Simulation::history() const {
+    return history_;
+}
+
 const Stats& Simulation::stats() const {
     return stats_;
 }
@@ -665,11 +707,14 @@ std::optional<std::uint64_t> Simulation::creatureAt(float worldX, float worldY, 
         if (!creature.alive) {
             continue;
         }
-        const Vec2 delta = shortestWrappedDelta(point, creature.position, worldWidth_, worldHeight_);
-        const float distSq = lengthSquared(delta);
-        if (distSq < bestDistanceSq) {
-            bestDistanceSq = distSq;
-            bestId = creature.id;
+        for (int segmentIndex = 0; segmentIndex < kBodySegments; ++segmentIndex) {
+            const Vec2 delta = shortestWrappedDelta(point, creature.bodyPoints[segmentIndex], worldWidth_, worldHeight_);
+            const float segmentRadius = radius + creature.bodyRadii[segmentIndex];
+            const float distSq = lengthSquared(delta);
+            if (distSq < bestDistanceSq && distSq < segmentRadius * segmentRadius) {
+                bestDistanceSq = distSq;
+                bestId = creature.id;
+            }
         }
     }
 
@@ -706,6 +751,22 @@ SelectionInfo Simulation::selectionInfo() const {
     info.sensorRange = it->traits.sensorRange;
     info.biteDamage = it->traits.biteDamage;
     info.grazeRate = it->traits.grazeRate;
+    info.finSpan = it->traits.finSpan;
+    info.segmentSpacing = it->traits.segmentSpacing;
+    info.tailWaveAmplitude = it->traits.tailWaveAmplitude;
+    info.upkeep = it->traits.upkeep;
+    info.reproductionThreshold = it->traits.reproductionThreshold;
+    info.outputs = it->outputs;
+    info.memory = it->memory;
+
+    for (int bucket = 0; bucket < kSensorBuckets; ++bucket) {
+        const int base = bucket * kSensorChannels;
+        info.plantSense[bucket] = it->lastInputs[base + 0];
+        info.carrionSense[bucket] = it->lastInputs[base + 1];
+        info.opportunitySense[bucket] = it->lastInputs[base + 2];
+        info.threatSense[bucket] = it->lastInputs[base + 3];
+        info.signalSense[bucket] = it->lastInputs[base + 4];
+    }
 
     return info;
 }
@@ -848,6 +909,7 @@ void Simulation::step(float dt) {
         inputs[kSensorBuckets * kSensorChannels + 4] = sampleNutrient(creature.position.x, creature.position.y);
         inputs[kSensorBuckets * kSensorChannels + 5] = 0.5f + 0.5f * dot(normalize(current), forward);
 
+        creature.lastInputs = inputs;
         forwardBrain(creature.genome, creature, inputs);
     }
 
@@ -864,7 +926,9 @@ void Simulation::step(float dt) {
         float forwardVelocity = dot(relativeVelocity, forward);
         float lateralVelocity = dot(relativeVelocity, side);
 
-        forwardVelocity += thrustInput * creature.traits.forwardThrust * dt;
+        creature.gaitPhase += dt * (2.5f + outputDrive(thrustInput) * (1.0f + creature.genome.morphology.tailFlex * 3.2f));
+        const float tailPulse = 0.82f + 0.18f * std::sin(creature.gaitPhase);
+        forwardVelocity += thrustInput * creature.traits.forwardThrust * tailPulse * dt;
         forwardVelocity *= std::exp(-creature.traits.forwardDrag * dt);
         lateralVelocity *= std::exp(-creature.traits.lateralDrag * dt);
 
@@ -890,6 +954,8 @@ void Simulation::step(float dt) {
             creature.health += creature.energy;
             creature.energy = 0.0f;
         }
+
+        rebuildBodyPose(creature, worldWidth_, worldHeight_);
     }
 
     hash.clear();
@@ -897,13 +963,16 @@ void Simulation::step(float dt) {
         hash.insert(static_cast<int>(index), creatures_[index].position);
     }
 
+    std::vector<Vec2> collisionPositionDelta(creatures_.size(), Vec2 {});
+    std::vector<Vec2> collisionVelocityDelta(creatures_.size(), Vec2 {});
+
     for (std::size_t index = 0; index < creatures_.size(); ++index) {
         Creature& creature = creatures_[index];
         if (!creature.alive) {
             continue;
         }
 
-        hash.query(creature.position, creature.traits.collisionRadius * 2.3f, nearby);
+        hash.query(creature.position, creature.traits.collisionRadius * 1.8f, nearby);
         for (int otherIndex : nearby) {
             if (otherIndex <= static_cast<int>(index)) {
                 continue;
@@ -914,26 +983,54 @@ void Simulation::step(float dt) {
                 continue;
             }
 
-            Vec2 delta = shortestWrappedDelta(creature.position, other.position, worldWidth_, worldHeight_);
-            float distSq = lengthSquared(delta);
-            const float minDistance = creature.traits.collisionRadius + other.traits.collisionRadius;
-            if (distSq >= minDistance * minDistance) {
+            float strongestOverlap = 0.0f;
+            Vec2 strongestNormal {1.0f, 0.0f};
+
+            for (int a = 0; a < kBodySegments; ++a) {
+                for (int b = 0; b < kBodySegments; ++b) {
+                    const Vec2 delta = shortestWrappedDelta(
+                        creature.bodyPoints[a],
+                        other.bodyPoints[b],
+                        worldWidth_,
+                        worldHeight_
+                    );
+                    const float distSq = lengthSquared(delta);
+                    const float minDistance = creature.bodyRadii[a] + other.bodyRadii[b];
+                    if (distSq >= minDistance * minDistance) {
+                        continue;
+                    }
+
+                    const float dist = std::sqrt(std::max(distSq, 1e-4f));
+                    const float overlap = minDistance - dist;
+                    if (overlap > strongestOverlap) {
+                        strongestOverlap = overlap;
+                        strongestNormal = delta / dist;
+                    }
+                }
+            }
+
+            if (strongestOverlap <= 0.0f) {
                 continue;
             }
 
-            float dist = std::sqrt(std::max(distSq, 1e-4f));
-            Vec2 normal = delta / dist;
-            const float overlap = minDistance - dist;
             const float totalMass = creature.traits.mass + other.traits.mass;
             const float creatureWeight = other.traits.mass / totalMass;
             const float otherWeight = creature.traits.mass / totalMass;
+            const Vec2 correction = strongestNormal * strongestOverlap * 0.55f;
 
-            creature.position = wrapPosition(creature.position - normal * (overlap * creatureWeight * 0.55f), worldWidth_, worldHeight_);
-            other.position = wrapPosition(other.position + normal * (overlap * otherWeight * 0.55f), worldWidth_, worldHeight_);
-
-            creature.velocity = creature.velocity - normal * (overlap * 3.5f * creatureWeight);
-            other.velocity = other.velocity + normal * (overlap * 3.5f * otherWeight);
+            collisionPositionDelta[index] = collisionPositionDelta[index] - correction * creatureWeight;
+            collisionPositionDelta[static_cast<std::size_t>(otherIndex)]
+                = collisionPositionDelta[static_cast<std::size_t>(otherIndex)] + correction * otherWeight;
+            collisionVelocityDelta[index] = collisionVelocityDelta[index] - strongestNormal * (strongestOverlap * 3.0f * creatureWeight);
+            collisionVelocityDelta[static_cast<std::size_t>(otherIndex)]
+                = collisionVelocityDelta[static_cast<std::size_t>(otherIndex)] + strongestNormal * (strongestOverlap * 3.0f * otherWeight);
         }
+    }
+
+    for (std::size_t index = 0; index < creatures_.size(); ++index) {
+        creatures_[index].position = wrapPosition(creatures_[index].position + collisionPositionDelta[index], worldWidth_, worldHeight_);
+        creatures_[index].velocity = creatures_[index].velocity + collisionVelocityDelta[index];
+        rebuildBodyPose(creatures_[index], worldWidth_, worldHeight_);
     }
 
     std::vector<Creature> pendingSpawns;
@@ -948,6 +1045,7 @@ void Simulation::step(float dt) {
         const float grazeDrive = outputDrive(creature.outputs[2]);
         const float biteDrive = outputDrive(creature.outputs[3]);
         const float reproduceDrive = outputDrive(creature.outputs[5]);
+        const Vec2 mouth = mouthPosition(creature);
         const float reproductiveReadiness = std::clamp(
             (creature.energy - creature.traits.reproductionThreshold * 0.78f)
                 / std::max(16.0f, creature.traits.reproductionThreshold * 0.42f),
@@ -965,7 +1063,7 @@ void Simulation::step(float dt) {
             float bestDistSq = std::numeric_limits<float>::max();
 
             for (Bloom& bloom : blooms_) {
-                const Vec2 delta = shortestWrappedDelta(creature.position, bloom.position, worldWidth_, worldHeight_);
+                const Vec2 delta = shortestWrappedDelta(mouth, bloom.position, worldWidth_, worldHeight_);
                 const float distSq = lengthSquared(delta);
                 if (distSq < bestDistSq) {
                     const float dist = std::sqrt(distSq);
@@ -993,7 +1091,7 @@ void Simulation::step(float dt) {
             float bestCarrionScore = -1.0f;
 
             for (Carrion& chunk : carrion_) {
-                const Vec2 delta = shortestWrappedDelta(creature.position, chunk.position, worldWidth_, worldHeight_);
+                const Vec2 delta = shortestWrappedDelta(mouth, chunk.position, worldWidth_, worldHeight_);
                 const float dist = length(delta);
                 if (dist > creature.traits.biteReach + 12.0f) {
                     continue;
@@ -1025,7 +1123,22 @@ void Simulation::step(float dt) {
                         continue;
                     }
 
-                    const Vec2 delta = shortestWrappedDelta(creature.position, other.position, worldWidth_, worldHeight_);
+                    Vec2 targetPoint = other.bodyPoints[0];
+                    float closestSegmentSq = lengthSquared(shortestWrappedDelta(mouth, targetPoint, worldWidth_, worldHeight_));
+                    for (int segmentIndex = 1; segmentIndex < kBodySegments; ++segmentIndex) {
+                        const float candidateSq = lengthSquared(shortestWrappedDelta(
+                            mouth,
+                            other.bodyPoints[segmentIndex],
+                            worldWidth_,
+                            worldHeight_
+                        ));
+                        if (candidateSq < closestSegmentSq) {
+                            closestSegmentSq = candidateSq;
+                            targetPoint = other.bodyPoints[segmentIndex];
+                        }
+                    }
+
+                    const Vec2 delta = shortestWrappedDelta(mouth, targetPoint, worldWidth_, worldHeight_);
                     const float dist = length(delta);
                     if (dist > creature.traits.biteReach + other.traits.collisionRadius * 0.35f) {
                         continue;
@@ -1157,6 +1270,26 @@ void Simulation::step(float dt) {
     stats_.avgMeatAffinity /= divisor;
     stats_.avgMass /= divisor;
     stats_.avgSpeed /= divisor;
+
+    historyAccumulator_ += dt;
+    if (historyAccumulator_ >= 0.5f) {
+        historyAccumulator_ -= 0.5f;
+        history_.push_back(HistorySample {
+            .time = timeSeconds_,
+            .population = stats_.population,
+            .blooms = stats_.blooms,
+            .carrion = stats_.carrion,
+            .avgPlantAffinity = stats_.avgPlantAffinity,
+            .avgMeatAffinity = stats_.avgMeatAffinity,
+            .avgMass = stats_.avgMass,
+            .grazers = stats_.grazers,
+            .omnivores = stats_.omnivores,
+            .hunters = stats_.hunters
+        });
+        while (history_.size() > 180) {
+            history_.pop_front();
+        }
+    }
 }
 
 }  // namespace alife

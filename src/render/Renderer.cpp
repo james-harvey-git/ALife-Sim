@@ -15,8 +15,37 @@ namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 
+float clamp01(float value) {
+    return std::clamp(value, 0.0f, 1.0f);
+}
+
 float lerp(float a, float b, float t) {
     return a + (b - a) * t;
+}
+
+Vec2 operator+(const Vec2& lhs, const Vec2& rhs) {
+    return {lhs.x + rhs.x, lhs.y + rhs.y};
+}
+
+Vec2 operator-(const Vec2& lhs, const Vec2& rhs) {
+    return {lhs.x - rhs.x, lhs.y - rhs.y};
+}
+
+Vec2 operator*(const Vec2& value, float scale) {
+    return {value.x * scale, value.y * scale};
+}
+
+float lengthSquared(const Vec2& value) {
+    return value.x * value.x + value.y * value.y;
+}
+
+Vec2 normalize(const Vec2& value) {
+    const float lenSq = lengthSquared(value);
+    if (lenSq < 1e-6f) {
+        return {1.0f, 0.0f};
+    }
+    const float invLen = 1.0f / std::sqrt(lenSq);
+    return value * invLen;
 }
 
 std::uint8_t toByte(float value) {
@@ -166,37 +195,6 @@ std::optional<std::string> findFontPath() {
     return std::nullopt;
 }
 
-std::uint64_t quantize(float value, int levels) {
-    const auto clamped = static_cast<std::uint64_t>(std::clamp(static_cast<int>(std::round(value * (levels - 1))), 0, levels - 1));
-    return clamped;
-}
-
-std::uint64_t phenotypeKey(const Genome& genome) {
-    std::uint64_t key = 0;
-    int shift = 0;
-
-    auto push = [&](float value, int levels, int bits) {
-        key |= (quantize(value, levels) << shift);
-        shift += bits;
-    };
-
-    push(genome.morphology.coreSize, 16, 4);
-    push(genome.morphology.elongation, 16, 4);
-    push(genome.morphology.finArea, 16, 4);
-    push(genome.morphology.armor, 16, 4);
-    push(genome.morphology.jawLength, 16, 4);
-    push(genome.morphology.jawArc, 16, 4);
-    push(genome.morphology.sensorRange, 16, 4);
-    push(genome.morphology.spikes, 16, 4);
-    push(genome.morphology.hue, 32, 5);
-    push(genome.morphology.pattern, 16, 4);
-    push(genome.ecology.plantAffinity, 16, 4);
-    push(genome.ecology.meatAffinity, 16, 4);
-    push(static_cast<float>(genome.brain.activeHidden) / static_cast<float>(kMaxHiddenCount), 16, 4);
-
-    return key;
-}
-
 }  // namespace
 
 Renderer::~Renderer() {
@@ -241,24 +239,26 @@ bool Renderer::initialize() {
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
 
     if (const auto fontPath = findFontPath(); fontPath.has_value()) {
-        font_ = TTF_OpenFont(fontPath->c_str(), 18);
+        titleFont_ = TTF_OpenFont(fontPath->c_str(), 20);
+        font_ = TTF_OpenFont(fontPath->c_str(), 16);
+        smallFont_ = TTF_OpenFont(fontPath->c_str(), 13);
     }
 
     return true;
 }
 
 void Renderer::shutdown() {
-    for (auto& [_, sprite] : spriteCache_) {
-        if (sprite.texture != nullptr) {
-            SDL_DestroyTexture(sprite.texture);
-            sprite.texture = nullptr;
-        }
+    if (titleFont_ != nullptr) {
+        TTF_CloseFont(titleFont_);
+        titleFont_ = nullptr;
     }
-    spriteCache_.clear();
-
     if (font_ != nullptr) {
         TTF_CloseFont(font_);
         font_ = nullptr;
+    }
+    if (smallFont_ != nullptr) {
+        TTF_CloseFont(smallFont_);
+        smallFont_ = nullptr;
     }
     if (renderer_ != nullptr) {
         SDL_DestroyRenderer(renderer_);
@@ -320,122 +320,183 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
             worldViewport_.y + (world.y / simulation.worldHeight()) * worldViewport_.h
         };
     };
-
     const float worldScale = worldViewport_.w / simulation.worldWidth();
 
-    auto ensureSprite = [&](const Creature& creature) -> const SpriteEntry& {
-        const std::uint64_t key = phenotypeKey(creature.genome);
-        const auto found = spriteCache_.find(key);
-        if (found != spriteCache_.end()) {
-            return found->second;
+    auto drawText = [&](TTF_Font* font, float x, float y, const std::string& text, SDL_Color color) {
+        if (font == nullptr || text.empty()) {
+            return;
         }
+        SDL_Surface* surface = TTF_RenderUTF8_Blended(font, text.c_str(), color);
+        if (surface == nullptr) {
+            return;
+        }
+        SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer_, surface);
+        if (texture != nullptr) {
+            SDL_FRect destination {x, y, static_cast<float>(surface->w), static_cast<float>(surface->h)};
+            SDL_RenderCopyF(renderer_, texture, nullptr, &destination);
+            SDL_DestroyTexture(texture);
+        }
+        SDL_FreeSurface(surface);
+    };
 
-        SpriteEntry entry {};
-        entry.worldWidth = creature.traits.majorRadius * 2.8f + creature.genome.morphology.finArea * 10.0f;
-        entry.worldHeight = std::max(
-            creature.traits.minorRadius * 2.7f + creature.genome.morphology.spikes * 9.0f,
-            creature.traits.collisionRadius * 2.1f
-        );
+    auto drawCard = [&](const SDL_FRect& rect, const std::string& title) {
+        fillRect(renderer_, rect, {22, 28, 37, 255});
+        fillRect(renderer_, {rect.x, rect.y, rect.w, 28.0f}, {28, 40, 53, 255});
+        drawText(font_, rect.x + 10.0f, rect.y + 5.0f, title, {224, 232, 240, 255});
+    };
 
-        const int textureWidth = std::clamp(static_cast<int>(std::ceil(entry.worldWidth * 3.4f)), 84, 220);
-        const int textureHeight = std::clamp(static_cast<int>(std::ceil(entry.worldHeight * 3.4f)), 64, 200);
-        entry.texture = SDL_CreateTexture(
-            renderer_,
-            SDL_PIXELFORMAT_RGBA8888,
-            SDL_TEXTUREACCESS_TARGET,
-            textureWidth,
-            textureHeight
-        );
-        SDL_SetTextureBlendMode(entry.texture, SDL_BLENDMODE_BLEND);
-        SDL_SetRenderTarget(renderer_, entry.texture);
-        SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 0);
-        SDL_RenderClear(renderer_);
+    auto drawSeries = [&](const SDL_FRect& rect, auto getter, float maxValue, SDL_Color color) {
+        const auto& history = simulation.history();
+        if (history.size() < 2 || maxValue <= 0.0f) {
+            return;
+        }
+        setColor(renderer_, color);
+        for (std::size_t index = 1; index < history.size(); ++index) {
+            const float x1 = rect.x + rect.w * (static_cast<float>(index - 1) / static_cast<float>(history.size() - 1));
+            const float x2 = rect.x + rect.w * (static_cast<float>(index) / static_cast<float>(history.size() - 1));
+            const float y1 = rect.y + rect.h - (getter(history[index - 1]) / maxValue) * rect.h;
+            const float y2 = rect.y + rect.h - (getter(history[index]) / maxValue) * rect.h;
+            SDL_RenderDrawLineF(renderer_, x1, y1, x2, y2);
+        }
+    };
 
-        const float cx = textureWidth * 0.47f;
-        const float cy = textureHeight * 0.5f;
-        const float pixelsPerWorld = std::min(
-            static_cast<float>(textureWidth) / entry.worldWidth,
-            static_cast<float>(textureHeight) / entry.worldHeight
-        );
-        const float bodyRx = creature.traits.majorRadius * pixelsPerWorld;
-        const float bodyRy = creature.traits.minorRadius * pixelsPerWorld;
-        const float finLength = lerp(bodyRx * 0.3f, bodyRx * 0.95f, creature.genome.morphology.finArea);
-        const float finHeight = lerp(bodyRy * 0.35f, bodyRy * 0.95f, creature.genome.morphology.finArea);
-        const float jawLength = lerp(bodyRx * 0.25f, bodyRx * 0.9f, creature.genome.morphology.jawLength);
-        const float spikeLength = lerp(0.0f, bodyRy * 0.75f, creature.genome.morphology.spikes);
+    auto drawSignedBar = [&](float x, float y, float w, float h, float value, SDL_Color positive, SDL_Color negative) {
+        fillRect(renderer_, {x, y, w, h}, {34, 43, 56, 255});
+        const float center = x + w * 0.5f;
+        fillRect(renderer_, {center - 1.0f, y, 2.0f, h}, {83, 102, 124, 255});
+        const float clamped = std::clamp(value, -1.0f, 1.0f);
+        if (clamped >= 0.0f) {
+            fillRect(renderer_, {center, y + 1.0f, clamped * (w * 0.5f - 2.0f), h - 2.0f}, positive);
+        } else {
+            fillRect(renderer_, {center + clamped * (w * 0.5f - 2.0f), y + 1.0f, -clamped * (w * 0.5f - 2.0f), h - 2.0f}, negative);
+        }
+    };
 
+    auto drawBucketStrip = [&](float x, float y, float w, float h, const std::array<float, kSensorBuckets>& values, SDL_Color color) {
+        const float cellW = (w - 4.0f) / static_cast<float>(kSensorBuckets);
+        for (int bucket = 0; bucket < kSensorBuckets; ++bucket) {
+            const SDL_FRect bg {x + bucket * cellW, y, cellW - 2.0f, h};
+            fillRect(renderer_, bg, {34, 43, 56, 255});
+            fillRect(
+                renderer_,
+                {bg.x, bg.y + (1.0f - clamp01(values[bucket])) * bg.h, bg.w, clamp01(values[bucket]) * bg.h},
+                color
+            );
+        }
+    };
+
+    auto drawCreature = [&](const Creature& creature, bool selected) {
         const SDL_Color body = hsv(
             creature.genome.morphology.hue,
-            lerp(0.45f, 0.8f, creature.genome.morphology.armor),
-            lerp(0.7f, 0.95f, creature.genome.ecology.plantAffinity)
+            lerp(0.42f, 0.82f, creature.genome.morphology.armor),
+            lerp(0.7f, 0.96f, creature.genome.ecology.plantAffinity)
         );
-        const SDL_Color accent = hsv(
-            creature.genome.morphology.hue + 0.08f,
-            0.45f,
-            0.98f,
-            220
-        );
+        const SDL_Color accent = hsv(creature.genome.morphology.hue + 0.07f, 0.58f, 0.98f, 220);
         const SDL_Color shell = tint(body, 0.62f, 255);
-        const SDL_Color shadow = tint(body, 0.42f, 200);
-        const SDL_Color eye = hsv(0.13f, 0.18f, 0.98f);
+        const SDL_Color shadow = tint(body, 0.42f, 160);
+        const SDL_Color eye = hsv(0.14f, 0.18f, 0.98f);
 
-        fillTriangle(
-            renderer_,
-            {cx - bodyRx * 0.95f, cy},
-            {cx - bodyRx - finLength, cy - finHeight},
-            {cx - bodyRx * 0.55f, cy - bodyRy * 0.18f},
-            accent
-        );
-        fillTriangle(
-            renderer_,
-            {cx - bodyRx * 0.95f, cy},
-            {cx - bodyRx - finLength, cy + finHeight},
-            {cx - bodyRx * 0.55f, cy + bodyRy * 0.18f},
-            accent
-        );
+        const SDL_FPoint head = worldToScreen(creature.bodyPoints[0]);
+        const SDL_FPoint trailEnd {
+            head.x - creature.velocity.x * worldScale * 0.05f,
+            head.y - creature.velocity.y * worldScale * 0.05f
+        };
+        drawLine(renderer_, head, trailEnd, {73, 86, 107, 90});
 
-        if (creature.genome.morphology.spikes > 0.12f) {
-            fillTriangle(
-                renderer_,
-                {cx - bodyRx * 0.15f, cy - bodyRy * 0.9f},
-                {cx + bodyRx * 0.1f, cy - bodyRy - spikeLength},
-                {cx + bodyRx * 0.35f, cy - bodyRy * 0.78f},
-                shell
-            );
-            fillTriangle(
-                renderer_,
-                {cx - bodyRx * 0.05f, cy + bodyRy * 0.9f},
-                {cx + bodyRx * 0.2f, cy + bodyRy + spikeLength},
-                {cx + bodyRx * 0.45f, cy + bodyRy * 0.78f},
-                shell
-            );
+        if (creature.signal > 0.08f) {
+            const float aura = (creature.traits.signalRange * worldScale) * 0.12f;
+            fillEllipse(renderer_, head.x, head.y, aura, aura * 0.84f, {88, 180, 214, static_cast<std::uint8_t>(18 + creature.signal * 28.0f)});
         }
 
-        fillEllipse(renderer_, cx, cy, bodyRx, bodyRy, body);
-        fillEllipse(renderer_, cx - bodyRx * 0.08f, cy, bodyRx * 0.62f, bodyRy * 0.62f, tint(body, 1.1f, 170));
+        for (int segmentIndex = kBodySegments - 1; segmentIndex >= 0; --segmentIndex) {
+            const SDL_FPoint point = worldToScreen(creature.bodyPoints[segmentIndex]);
+            const float radius = creature.bodyRadii[segmentIndex] * worldScale;
+            const float shade = lerp(0.78f, 1.05f, 1.0f - static_cast<float>(segmentIndex) / static_cast<float>(kBodySegments - 1));
+            const SDL_Color segmentColor = tint(body, shade, 240);
+            fillEllipse(renderer_, point.x, point.y, radius * 1.08f, radius * 0.9f, segmentColor);
+            fillEllipse(renderer_, point.x - radius * 0.12f, point.y, radius * 0.56f, radius * 0.42f, shadow);
+        }
+
+        const Vec2 forwardVector {std::cos(creature.angle), std::sin(creature.angle)};
+        const Vec2 sideVector {-forwardVector.y, forwardVector.x};
+
+        const Vec2 finBaseA = creature.bodyPoints[1];
+        const Vec2 finBaseB = creature.bodyPoints[2];
+        const Vec2 finTipTop = finBaseA + sideVector * creature.traits.finSpan - forwardVector * creature.traits.segmentSpacing * 0.2f;
+        const Vec2 finTipBottom = finBaseA - sideVector * creature.traits.finSpan - forwardVector * creature.traits.segmentSpacing * 0.2f;
+        fillTriangle(renderer_, worldToScreen(finBaseA), worldToScreen(finTipTop), worldToScreen(finBaseB), accent);
+        fillTriangle(renderer_, worldToScreen(finBaseA), worldToScreen(finTipBottom), worldToScreen(finBaseB), accent);
+
+        const Vec2 tailBase = creature.bodyPoints[kBodySegments - 1];
+        const Vec2 tailAnchor = creature.bodyPoints[kBodySegments - 2];
+        const Vec2 tailDirection = normalize(tailBase - tailAnchor);
+        const Vec2 tailSide {-tailDirection.y, tailDirection.x};
+        const float tailSpan = creature.bodyRadii[kBodySegments - 1] * 1.8f;
+        const Vec2 tailTip = tailBase - tailDirection * (creature.traits.segmentSpacing * 1.4f);
+        fillTriangle(
+            renderer_,
+            worldToScreen(tailBase + tailSide * tailSpan),
+            worldToScreen(tailTip),
+            worldToScreen(tailBase - tailSide * tailSpan),
+            accent
+        );
+
+        const Vec2 jawBase = creature.bodyPoints[0] + forwardVector * (creature.bodyRadii[0] * 0.8f);
+        const Vec2 jawTip = jawBase + forwardVector * (creature.traits.biteReach * 0.55f);
+        const Vec2 jawSide = sideVector * (creature.bodyRadii[0] * lerp(0.2f, 0.5f, creature.genome.morphology.jawArc));
+        fillTriangle(renderer_, worldToScreen(jawBase + jawSide), worldToScreen(jawTip), worldToScreen(jawBase - jawSide), shell);
+
+        const SDL_FPoint eyePoint = worldToScreen(creature.bodyPoints[0] + forwardVector * creature.bodyRadii[0] * 0.18f - sideVector * creature.bodyRadii[0] * 0.24f);
+        fillEllipse(renderer_, eyePoint.x, eyePoint.y, 2.8f, 2.8f, eye);
+        fillEllipse(renderer_, eyePoint.x + 0.6f, eyePoint.y, 1.0f, 1.0f, {14, 16, 20, 255});
 
         if (creature.genome.morphology.pattern < 0.5f) {
-            fillEllipse(renderer_, cx - bodyRx * 0.2f, cy - bodyRy * 0.24f, bodyRx * 0.28f, bodyRy * 0.14f, shadow);
-            fillEllipse(renderer_, cx + bodyRx * 0.12f, cy + bodyRy * 0.2f, bodyRx * 0.22f, bodyRy * 0.12f, shadow);
+            fillEllipse(renderer_, head.x - creature.bodyRadii[0] * worldScale * 0.16f, head.y + creature.bodyRadii[0] * worldScale * 0.12f, 3.2f, 2.2f, shadow);
+            const SDL_FPoint torso = worldToScreen(creature.bodyPoints[1]);
+            fillEllipse(renderer_, torso.x + creature.bodyRadii[1] * worldScale * 0.1f, torso.y - 1.0f, 2.6f, 1.8f, shadow);
         } else {
-            fillEllipse(renderer_, cx - bodyRx * 0.16f, cy, bodyRx * 0.12f, bodyRy * 0.85f, shadow);
-            fillEllipse(renderer_, cx + bodyRx * 0.16f, cy, bodyRx * 0.1f, bodyRy * 0.7f, shadow);
+            for (int segmentIndex = 0; segmentIndex < kBodySegments; ++segmentIndex) {
+                const SDL_FPoint point = worldToScreen(creature.bodyPoints[segmentIndex]);
+                fillEllipse(renderer_, point.x, point.y - creature.bodyRadii[segmentIndex] * worldScale * 0.24f, creature.bodyRadii[segmentIndex] * worldScale * 0.22f, 1.5f, shadow);
+            }
         }
 
-        fillTriangle(
-            renderer_,
-            {cx + bodyRx * 0.82f, cy},
-            {cx + bodyRx + jawLength, cy - bodyRy * lerp(0.18f, 0.48f, creature.genome.morphology.jawArc)},
-            {cx + bodyRx + jawLength, cy + bodyRy * lerp(0.18f, 0.48f, creature.genome.morphology.jawArc)},
-            shell
-        );
+        if (selected) {
+            const float sensorHalf = creature.traits.sensorSpan * 0.5f;
+            const float sensorLength = creature.traits.sensorRange * worldScale;
+            const Vec2 sensorEdgeA {
+                std::cos(creature.angle - sensorHalf),
+                std::sin(creature.angle - sensorHalf)
+            };
+            const Vec2 sensorEdgeB {
+                std::cos(creature.angle + sensorHalf),
+                std::sin(creature.angle + sensorHalf)
+            };
+            drawLine(renderer_, head, worldToScreen(creature.bodyPoints[0] + sensorEdgeA * creature.traits.sensorRange), {138, 193, 255, 90});
+            drawLine(renderer_, head, worldToScreen(creature.bodyPoints[0] + sensorEdgeB * creature.traits.sensorRange), {138, 193, 255, 90});
+            drawLine(renderer_, head, worldToScreen(creature.bodyPoints[0] + forwardVector * creature.traits.sensorRange), {138, 193, 255, 46});
 
-        fillEllipse(renderer_, cx + bodyRx * 0.28f, cy - bodyRy * 0.22f, bodyRx * 0.12f, bodyRy * 0.12f, eye);
-        fillEllipse(renderer_, cx + bodyRx * 0.31f, cy - bodyRy * 0.22f, bodyRx * 0.04f, bodyRy * 0.04f, {18, 18, 22, 255});
+            const Vec2 biteEdgeA {
+                std::cos(creature.angle - creature.traits.biteArc),
+                std::sin(creature.angle - creature.traits.biteArc)
+            };
+            const Vec2 biteEdgeB {
+                std::cos(creature.angle + creature.traits.biteArc),
+                std::sin(creature.angle + creature.traits.biteArc)
+            };
+            drawLine(renderer_, head, worldToScreen(creature.bodyPoints[0] + biteEdgeA * creature.traits.biteReach), {255, 210, 160, 110});
+            drawLine(renderer_, head, worldToScreen(creature.bodyPoints[0] + biteEdgeB * creature.traits.biteReach), {255, 210, 160, 110});
 
-        SDL_SetRenderTarget(renderer_, nullptr);
-        const auto [inserted, _] = spriteCache_.emplace(key, entry);
-        return inserted->second;
+            const float ringRadius = creature.traits.collisionRadius * worldScale * 0.7f;
+            fillEllipse(renderer_, head.x, head.y, ringRadius, ringRadius, {242, 245, 247, 36});
+            drawLine(
+                renderer_,
+                head,
+                {head.x + forwardVector.x * ringRadius, head.y + forwardVector.y * ringRadius},
+                {243, 244, 246, 180}
+            );
+            (void)sensorLength;
+        }
     };
 
     fillRect(renderer_, {0.0f, 0.0f, static_cast<float>(kWindowWidth), static_cast<float>(kWindowHeight)}, {11, 14, 20, 255});
@@ -488,44 +549,13 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
 
     const std::uint64_t selectedId = simulation.selectedCreature();
     for (const Creature& creature : simulation.creatures()) {
-        const SDL_FPoint screen = worldToScreen(creature.position);
-        const SDL_FPoint trailEnd {
-            screen.x - creature.velocity.x * worldScale * 0.05f,
-            screen.y - creature.velocity.y * worldScale * 0.05f
-        };
-        drawLine(renderer_, screen, trailEnd, {73, 86, 107, 90});
-
-        if (creature.signal > 0.08f) {
-            const float aura = (creature.traits.signalRange * worldScale) * 0.12f;
-            fillEllipse(renderer_, screen.x, screen.y, aura, aura * 0.85f, {88, 180, 214, static_cast<std::uint8_t>(18 + creature.signal * 28.0f)});
+        if (creature.id != selectedId) {
+            drawCreature(creature, false);
         }
-
-        const SpriteEntry& sprite = ensureSprite(creature);
-        SDL_FRect destination {
-            screen.x - sprite.worldWidth * worldScale * 0.5f,
-            screen.y - sprite.worldHeight * worldScale * 0.5f,
-            sprite.worldWidth * worldScale,
-            sprite.worldHeight * worldScale
-        };
-        SDL_RenderCopyExF(
-            renderer_,
-            sprite.texture,
-            nullptr,
-            &destination,
-            creature.angle * 180.0 / kPi,
-            nullptr,
-            SDL_FLIP_NONE
-        );
-
+    }
+    for (const Creature& creature : simulation.creatures()) {
         if (creature.id == selectedId) {
-            const float ringRadius = creature.traits.collisionRadius * worldScale * 1.15f;
-            fillEllipse(renderer_, screen.x, screen.y, ringRadius, ringRadius, {242, 245, 247, 46});
-            drawLine(
-                renderer_,
-                screen,
-                {screen.x + std::cos(creature.angle) * ringRadius, screen.y + std::sin(creature.angle) * ringRadius},
-                {243, 244, 246, 180}
-            );
+            drawCreature(creature, true);
         }
     }
 
@@ -536,92 +566,134 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         static_cast<float>(kWindowHeight - kMargin * 2)
     };
     fillRect(renderer_, panel, {15, 18, 24, 238});
-    fillRect(renderer_, {panel.x, panel.y, panel.w, 52.0f}, {24, 34, 45, 255});
-
-    auto drawText = [&](float x, float y, const std::string& text, SDL_Color color) {
-        if (font_ == nullptr || text.empty()) {
-            return;
-        }
-        SDL_Surface* surface = TTF_RenderUTF8_Blended(font_, text.c_str(), color);
-        if (surface == nullptr) {
-            return;
-        }
-        SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer_, surface);
-        if (texture != nullptr) {
-            SDL_FRect destination {x, y, static_cast<float>(surface->w), static_cast<float>(surface->h)};
-            SDL_RenderCopyF(renderer_, texture, nullptr, &destination);
-            SDL_DestroyTexture(texture);
-        }
-        SDL_FreeSurface(surface);
-    };
+    fillRect(renderer_, {panel.x, panel.y, panel.w, 54.0f}, {24, 34, 45, 255});
 
     float textY = panel.y + 14.0f;
-    drawText(panel.x + 18.0f, textY, "ALife Sim", {240, 244, 247, 255});
+    drawText(titleFont_, panel.x + 18.0f, textY - 2.0f, "ALife Sim", {240, 244, 247, 255});
     textY += 22.0f;
-    drawText(panel.x + 18.0f, textY, "native physics-first ecology", {129, 151, 176, 255});
+    drawText(smallFont_, panel.x + 18.0f, textY, "segmented phenotype ecology", {129, 151, 176, 255});
     textY += 34.0f;
 
     const Stats& stats = simulation.stats();
     const auto info = simulation.selectionInfo();
+    const auto& history = simulation.history();
 
-    std::vector<std::string> lines {
-        "time " + formatFloat(simulation.timeSeconds(), 1) + "s",
-        std::string(paused ? "state paused" : "state running") + "  " + std::to_string(timeScale) + "x",
-        "population " + std::to_string(stats.population),
-        "blooms " + std::to_string(stats.blooms) + "  carrion " + std::to_string(stats.carrion),
-        "births " + std::to_string(stats.births) + "  deaths " + std::to_string(stats.deaths),
-        "season " + formatFloat(stats.season, 2),
-        "avg plant " + formatFloat(stats.avgPlantAffinity, 2),
-        "avg meat " + formatFloat(stats.avgMeatAffinity, 2),
-        "avg mass " + formatFloat(stats.avgMass, 1),
-        "roles G:" + std::to_string(stats.grazers)
-            + " O:" + std::to_string(stats.omnivores)
-            + " H:" + std::to_string(stats.hunters)
-    };
+    const SDL_FRect summaryCard {panel.x + 14.0f, textY, panel.w - 28.0f, 118.0f};
+    drawCard(summaryCard, "World");
+    drawText(font_, summaryCard.x + 12.0f, summaryCard.y + 36.0f, "time " + formatFloat(simulation.timeSeconds(), 1) + "s", {228, 233, 238, 255});
+    drawText(font_, summaryCard.x + 150.0f, summaryCard.y + 36.0f, paused ? "paused" : "running", paused ? SDL_Color{255, 204, 128, 255} : SDL_Color{140, 230, 166, 255});
+    drawText(font_, summaryCard.x + 248.0f, summaryCard.y + 36.0f, std::to_string(timeScale) + "x", {197, 215, 229, 255});
+    drawText(font_, summaryCard.x + 12.0f, summaryCard.y + 58.0f, "pop " + std::to_string(stats.population), {232, 240, 246, 255});
+    drawText(font_, summaryCard.x + 110.0f, summaryCard.y + 58.0f, "blooms " + std::to_string(stats.blooms), {110, 227, 170, 255});
+    drawText(font_, summaryCard.x + 235.0f, summaryCard.y + 58.0f, "carrion " + std::to_string(stats.carrion), {222, 141, 112, 255});
+    drawText(smallFont_, summaryCard.x + 12.0f, summaryCard.y + 84.0f, "births " + std::to_string(stats.births) + "  deaths " + std::to_string(stats.deaths), {181, 194, 208, 255});
+    drawText(smallFont_, summaryCard.x + 220.0f, summaryCard.y + 84.0f, "season " + formatFloat(stats.season, 2), {181, 194, 208, 255});
+    textY += summaryCard.h + 10.0f;
 
-    for (const std::string& line : lines) {
-        drawText(panel.x + 18.0f, textY, line, {221, 228, 234, 255});
-        textY += 22.0f;
+    const SDL_FRect populationCard {panel.x + 14.0f, textY, panel.w - 28.0f, 136.0f};
+    drawCard(populationCard, "Population History");
+    const SDL_FRect popGraph {populationCard.x + 10.0f, populationCard.y + 36.0f, populationCard.w - 20.0f, 74.0f};
+    fillRect(renderer_, popGraph, {14, 18, 24, 255});
+    float populationMax = 1.0f;
+    for (const HistorySample& sample : history) {
+        populationMax = std::max(populationMax, static_cast<float>(std::max({sample.population, sample.blooms, sample.carrion})));
     }
+    drawSeries(popGraph, [](const HistorySample& sample) { return static_cast<float>(sample.blooms); }, populationMax, {104, 226, 174, 255});
+    drawSeries(popGraph, [](const HistorySample& sample) { return static_cast<float>(sample.carrion); }, populationMax, {219, 128, 104, 255});
+    drawSeries(popGraph, [](const HistorySample& sample) { return static_cast<float>(sample.population); }, populationMax, {238, 242, 247, 255});
+    drawText(smallFont_, popGraph.x + 4.0f, popGraph.y + 2.0f, std::to_string(static_cast<int>(populationMax)), {118, 132, 148, 255});
+    drawText(smallFont_, populationCard.x + 12.0f, populationCard.y + 114.0f, "white population", {230, 234, 238, 255});
+    drawText(smallFont_, populationCard.x + 128.0f, populationCard.y + 114.0f, "green blooms", {104, 226, 174, 255});
+    drawText(smallFont_, populationCard.x + 230.0f, populationCard.y + 114.0f, "rust carrion", {219, 128, 104, 255});
+    textY += populationCard.h + 10.0f;
 
-    textY += 8.0f;
-    fillRect(renderer_, {panel.x + 14.0f, textY - 6.0f, panel.w - 28.0f, info.valid ? 240.0f : 92.0f}, {24, 31, 41, 255});
-    drawText(panel.x + 18.0f, textY, "selection", {165, 198, 224, 255});
-    textY += 24.0f;
+    const SDL_FRect ecologyCard {panel.x + 14.0f, textY, panel.w - 28.0f, 118.0f};
+    drawCard(ecologyCard, "Ecology Drift");
+    const SDL_FRect roleGraph {ecologyCard.x + 10.0f, ecologyCard.y + 36.0f, ecologyCard.w - 20.0f, 54.0f};
+    fillRect(renderer_, roleGraph, {14, 18, 24, 255});
+    float roleMax = 1.0f;
+    for (const HistorySample& sample : history) {
+        roleMax = std::max(roleMax, static_cast<float>(std::max({sample.grazers, sample.omnivores, sample.hunters})));
+    }
+    drawSeries(roleGraph, [](const HistorySample& sample) { return static_cast<float>(sample.grazers); }, roleMax, {125, 218, 139, 255});
+    drawSeries(roleGraph, [](const HistorySample& sample) { return static_cast<float>(sample.omnivores); }, roleMax, {125, 173, 236, 255});
+    drawSeries(roleGraph, [](const HistorySample& sample) { return static_cast<float>(sample.hunters); }, roleMax, {235, 146, 104, 255});
+    drawText(smallFont_, ecologyCard.x + 12.0f, ecologyCard.y + 96.0f, "avg plant " + formatFloat(stats.avgPlantAffinity, 2), {125, 218, 139, 255});
+    drawText(smallFont_, ecologyCard.x + 136.0f, ecologyCard.y + 96.0f, "avg meat " + formatFloat(stats.avgMeatAffinity, 2), {235, 146, 104, 255});
+    drawText(smallFont_, ecologyCard.x + 248.0f, ecologyCard.y + 96.0f, "avg mass " + formatFloat(stats.avgMass, 1), {202, 214, 226, 255});
+    textY += ecologyCard.h + 10.0f;
+
+    const SDL_FRect selectionCard {panel.x + 14.0f, textY, panel.w - 28.0f, panel.y + panel.h - textY - 88.0f};
+    drawCard(selectionCard, "Selection");
 
     if (info.valid) {
-        const std::vector<std::string> selectionLines {
-            "#" + std::to_string(info.id) + "  " + toString(info.dietClass),
-            "energy " + formatFloat(info.energy, 1) + "  health " + formatFloat(info.health, 1),
-            "age " + formatFloat(info.age, 1),
-            "plant " + formatFloat(info.plantAffinity, 2)
-                + "  meat " + formatFloat(info.meatAffinity, 2),
-            "aggression " + formatFloat(info.aggression, 2),
-            "body " + formatFloat(info.majorRadius, 1) + " x " + formatFloat(info.minorRadius, 1),
-            "mass " + formatFloat(info.mass, 1),
-            "thrust " + formatFloat(info.thrust, 1),
-            "turn " + formatFloat(info.turnTorque, 1),
-            "sensor " + formatFloat(info.sensorRange, 1),
-            "bite " + formatFloat(info.biteDamage, 1),
-            "graze " + formatFloat(info.grazeRate, 1)
-        };
-        for (const std::string& line : selectionLines) {
-            drawText(panel.x + 18.0f, textY, line, {230, 234, 238, 255});
-            textY += 20.0f;
+        float sy = selectionCard.y + 36.0f;
+        drawText(font_, selectionCard.x + 12.0f, sy, "#" + std::to_string(info.id) + "  " + toString(info.dietClass), {235, 239, 244, 255});
+        sy += 22.0f;
+        drawText(smallFont_, selectionCard.x + 12.0f, sy, "energy " + formatFloat(info.energy, 1) + "  health " + formatFloat(info.health, 1) + "  age " + formatFloat(info.age, 1), {219, 226, 233, 255});
+        sy += 18.0f;
+        drawText(smallFont_, selectionCard.x + 12.0f, sy, "mass " + formatFloat(info.mass, 1) + "  body " + formatFloat(info.majorRadius, 1) + " x " + formatFloat(info.minorRadius, 1), {219, 226, 233, 255});
+        sy += 18.0f;
+        drawText(smallFont_, selectionCard.x + 12.0f, sy, "fin " + formatFloat(info.finSpan, 1) + "  spacing " + formatFloat(info.segmentSpacing, 1) + "  wave " + formatFloat(info.tailWaveAmplitude, 2), {219, 226, 233, 255});
+        sy += 18.0f;
+        drawText(smallFont_, selectionCard.x + 12.0f, sy, "sensor " + formatFloat(info.sensorRange, 1) + "  bite " + formatFloat(info.biteDamage, 1) + "  graze " + formatFloat(info.grazeRate, 1), {219, 226, 233, 255});
+        sy += 18.0f;
+        drawText(smallFont_, selectionCard.x + 12.0f, sy, "plant " + formatFloat(info.plantAffinity, 2) + "  meat " + formatFloat(info.meatAffinity, 2) + "  aggr " + formatFloat(info.aggression, 2), {219, 226, 233, 255});
+        sy += 18.0f;
+        drawText(smallFont_, selectionCard.x + 12.0f, sy, "upkeep " + formatFloat(info.upkeep, 1) + "  repro " + formatFloat(info.reproductionThreshold, 1), {179, 194, 210, 255});
+        sy += 28.0f;
+
+        drawText(smallFont_, selectionCard.x + 12.0f, sy, "controller outputs", {163, 196, 224, 255});
+        sy += 18.0f;
+        constexpr std::array<const char*, kOutputCount> outputLabels {"turn", "thrust", "graze", "bite", "signal", "split"};
+        for (int outputIndex = 0; outputIndex < kOutputCount; ++outputIndex) {
+            drawText(smallFont_, selectionCard.x + 12.0f, sy, outputLabels[outputIndex], {205, 214, 222, 255});
+            drawSignedBar(selectionCard.x + 78.0f, sy + 2.0f, selectionCard.w - 96.0f, 10.0f, info.outputs[outputIndex], {99, 211, 166, 255}, {233, 128, 104, 255});
+            sy += 16.0f;
+        }
+
+        sy += 6.0f;
+        drawText(smallFont_, selectionCard.x + 12.0f, sy, "memory state", {163, 196, 224, 255});
+        sy += 18.0f;
+        for (int memoryIndex = 0; memoryIndex < kMemorySize; ++memoryIndex) {
+            drawText(smallFont_, selectionCard.x + 12.0f, sy, "m" + std::to_string(memoryIndex + 1), {205, 214, 222, 255});
+            drawSignedBar(selectionCard.x + 78.0f, sy + 2.0f, selectionCard.w - 96.0f, 10.0f, info.memory[memoryIndex], {125, 173, 236, 255}, {200, 126, 232, 255});
+            sy += 16.0f;
+        }
+
+        sy += 6.0f;
+        drawText(smallFont_, selectionCard.x + 12.0f, sy, "sensor buckets", {163, 196, 224, 255});
+        sy += 16.0f;
+        constexpr std::array<const char*, 5> sensorLabels {"plant", "carrion", "prey-op", "threat", "signal"};
+        const std::array<SDL_Color, 5> sensorColors {{
+            {110, 227, 170, 255},
+            {222, 141, 112, 255},
+            {248, 212, 120, 255},
+            {238, 112, 112, 255},
+            {124, 183, 255, 255}
+        }};
+        const std::array<std::array<float, kSensorBuckets>, 5> sensorData {{
+            info.plantSense,
+            info.carrionSense,
+            info.opportunitySense,
+            info.threatSense,
+            info.signalSense
+        }};
+        for (int sensorRow = 0; sensorRow < 5; ++sensorRow) {
+            drawText(smallFont_, selectionCard.x + 12.0f, sy + 1.0f, sensorLabels[sensorRow], {205, 214, 222, 255});
+            drawBucketStrip(selectionCard.x + 78.0f, sy, selectionCard.w - 96.0f, 14.0f, sensorData[sensorRow], sensorColors[sensorRow]);
+            sy += 20.0f;
         }
     } else {
-        drawText(panel.x + 18.0f, textY, "click a creature to inspect it", {179, 187, 196, 255});
-        textY += 20.0f;
-        drawText(panel.x + 18.0f, textY, "physics-derived stats show here", {125, 139, 155, 255});
-        textY += 20.0f;
+        drawText(font_, selectionCard.x + 12.0f, selectionCard.y + 40.0f, "click a creature to inspect it", {184, 192, 201, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 66.0f, "selection shows body physics, controller outputs,", {125, 139, 155, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 84.0f, "and bucketed sensor activity.", {125, 139, 155, 255});
     }
 
-    const float controlsY = panel.y + panel.h - 112.0f;
-    fillRect(renderer_, {panel.x + 14.0f, controlsY - 6.0f, panel.w - 28.0f, 104.0f}, {24, 31, 41, 255});
-    drawText(panel.x + 18.0f, controlsY, "controls", {165, 198, 224, 255});
-    drawText(panel.x + 18.0f, controlsY + 24.0f, "space pause   1/2/3 speed", {221, 228, 234, 255});
-    drawText(panel.x + 18.0f, controlsY + 46.0f, "r reseed      c clear selection", {221, 228, 234, 255});
-    drawText(panel.x + 18.0f, controlsY + 68.0f, "left click inspect   esc quit", {221, 228, 234, 255});
+    const SDL_FRect controlsCard {panel.x + 14.0f, panel.y + panel.h - 78.0f, panel.w - 28.0f, 78.0f};
+    drawCard(controlsCard, "Controls");
+    drawText(smallFont_, controlsCard.x + 12.0f, controlsCard.y + 36.0f, "space pause   1/2/3 speed   r reseed", {221, 228, 234, 255});
+    drawText(smallFont_, controlsCard.x + 12.0f, controlsCard.y + 54.0f, "left click inspect   c clear   esc quit", {221, 228, 234, 255});
 
     SDL_RenderPresent(renderer_);
 }

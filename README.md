@@ -9,7 +9,7 @@ This repository is a fresh start from the older predator/prey project. Instead o
 - One ancestral species at startup, no fixed predator or prey classes
 - Physics-first phenotype model where geometry drives movement and interaction
 - Continuous grazing, scavenging, and hunting tradeoffs instead of discrete diets
-- Procedural sprite generation tied directly to evolved body traits
+- Segmented procedural sprite rendering tied directly to evolved body traits
 - Native SDL2 runtime so we can push simulation complexity without browser overhead
 
 ## Physics-First Design
@@ -20,6 +20,7 @@ The simulation treats morphology as the source of truth. Each creature genome de
 - mass and rotational inertia
 - forward and lateral drag
 - thrust efficiency and turn torque
+- segmented body spacing and tail undulation
 - bite reach and bite arc
 - sensor range and viewing span
 - collision radius and carrion value
@@ -33,9 +34,10 @@ The first playable milestone in this repo includes:
 - toroidal water world with nutrient-driven bloom patches
 - current field that nudges body motion
 - evolving recurrent controllers
+- segmented phenotypes with curved body chains and body-part collision envelopes
 - grazing, carrion feeding, and live predation
 - reproduction with mutation from a single ancestor genome
-- native HUD with ecology and selection stats
+- native HUD with history graphs, ecology drift readouts, and controller inspection
 
 This is intentionally the foundation, not the end state. The long-term plan is to grow from phenotype-driven rigid bodies toward richer articulated morphologies and stronger environmental physics.
 
@@ -72,6 +74,5 @@ Run a non-graphical smoke test:
 ## Repo Layout
 
 - `src/sim`: simulation state, genomes, physics, and ecology
-- `src/render`: SDL2 renderer, HUD, and procedural sprite cache
+- `src/render`: SDL2 renderer, HUD, graphs, and procedural phenotype rendering
 - `docs`: architecture notes and future direction
-

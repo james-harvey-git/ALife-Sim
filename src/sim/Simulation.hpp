@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <optional>
 #include <random>
 #include <string>
@@ -19,6 +20,7 @@ constexpr int kSensorBuckets = 5;
 constexpr int kSensorChannels = 5;
 constexpr int kInternalInputs = 6;
 constexpr int kMemorySize = 4;
+constexpr int kBodySegments = 4;
 constexpr int kInputCount = kSensorBuckets * kSensorChannels + kInternalInputs;
 constexpr int kMaxHiddenCount = 16;
 constexpr int kOutputCount = 6;
@@ -75,6 +77,9 @@ struct Traits {
     float majorRadius = 12.0f;
     float minorRadius = 8.0f;
     float collisionRadius = 12.0f;
+    float finSpan = 8.0f;
+    float segmentSpacing = 10.0f;
+    float tailWaveAmplitude = 0.18f;
     float mass = 1.0f;
     float forwardThrust = 80.0f;
     float turnTorque = 4.0f;
@@ -110,9 +115,13 @@ struct Creature {
     float age = 0.0f;
     float signal = 0.0f;
     float cooldown = 0.0f;
+    float gaitPhase = 0.0f;
     bool alive = true;
     std::array<float, kMemorySize> memory {};
     std::array<float, kOutputCount> outputs {};
+    std::array<float, kInputCount> lastInputs {};
+    std::array<Vec2, kBodySegments> bodyPoints {};
+    std::array<float, kBodySegments> bodyRadii {};
 };
 
 struct Bloom {
@@ -145,6 +154,19 @@ struct Stats {
     int hunters = 0;
 };
 
+struct HistorySample {
+    float time = 0.0f;
+    std::size_t population = 0;
+    std::size_t blooms = 0;
+    std::size_t carrion = 0;
+    float avgPlantAffinity = 0.0f;
+    float avgMeatAffinity = 0.0f;
+    float avgMass = 0.0f;
+    int grazers = 0;
+    int omnivores = 0;
+    int hunters = 0;
+};
+
 struct SelectionInfo {
     bool valid = false;
     std::uint64_t id = 0;
@@ -163,6 +185,18 @@ struct SelectionInfo {
     float sensorRange = 0.0f;
     float biteDamage = 0.0f;
     float grazeRate = 0.0f;
+    float finSpan = 0.0f;
+    float segmentSpacing = 0.0f;
+    float tailWaveAmplitude = 0.0f;
+    float upkeep = 0.0f;
+    float reproductionThreshold = 0.0f;
+    std::array<float, kOutputCount> outputs {};
+    std::array<float, kMemorySize> memory {};
+    std::array<float, kSensorBuckets> plantSense {};
+    std::array<float, kSensorBuckets> carrionSense {};
+    std::array<float, kSensorBuckets> opportunitySense {};
+    std::array<float, kSensorBuckets> threatSense {};
+    std::array<float, kSensorBuckets> signalSense {};
 };
 
 class Simulation {
@@ -182,6 +216,7 @@ public:
     const std::vector<Creature>& creatures() const;
     const std::vector<Bloom>& blooms() const;
     const std::vector<Carrion>& carrion() const;
+    const std::deque<HistorySample>& history() const;
     const Stats& stats() const;
 
     float worldWidth() const;
@@ -198,12 +233,14 @@ private:
     std::uint64_t nextCreatureId_ = 1;
     std::uint64_t selectedCreatureId_ = 0;
     Stats stats_ {};
+    float historyAccumulator_ = 0.0f;
     Genome ancestorGenome_ {};
     std::mt19937_64 rng_ {};
 
     std::vector<Creature> creatures_ {};
     std::vector<Bloom> blooms_ {};
     std::vector<Carrion> carrion_ {};
+    std::deque<HistorySample> history_ {};
 };
 
 std::string toString(DietClass dietClass);
