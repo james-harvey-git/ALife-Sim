@@ -320,6 +320,12 @@ Renderer::UiAction Renderer::uiActionAt(int screenX, int screenY) const {
     if (pointInRect(screenX, screenY, topEnergyButton_)) {
         return UiAction::SelectTopEnergy;
     }
+    if (pointInRect(screenX, screenY, dominantLineageButton_)) {
+        return UiAction::SelectDominantLineage;
+    }
+    if (pointInRect(screenX, screenY, newestLineageButton_)) {
+        return UiAction::SelectNewestLineage;
+    }
     return UiAction::None;
 }
 
@@ -331,6 +337,8 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     updateViewport(simulation);
     randomSelectButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
     topEnergyButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
+    dominantLineageButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
+    newestLineageButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
 
     const auto worldToScreen = [&](const Vec2& world) {
         return SDL_FPoint {
@@ -370,7 +378,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     auto drawButton = [&](const SDL_FRect& rect, const std::string& label, SDL_Color fill, SDL_Color text) {
         fillRect(renderer_, rect, fill);
         fillRect(renderer_, {rect.x, rect.y + rect.h - 2.0f, rect.w, 2.0f}, tint(fill, 1.18f, 255));
-        drawText(smallFont_, rect.x + 10.0f, rect.y + 6.0f, label, text);
+        drawText(smallFont_, rect.x + 9.0f, rect.y + 4.0f, label, text);
     };
 
     auto drawSeries = [&](const SDL_FRect& rect, auto getter, float maxValue, SDL_Color color) {
@@ -766,7 +774,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     drawText(smallFont_, populationCard.x + 230.0f, populationCard.y + 114.0f, "rust carrion", {219, 128, 104, 255});
     textY += populationCard.h + 10.0f;
 
-    const SDL_FRect ecologyCard {panel.x + 14.0f, textY, panel.w - 28.0f, 118.0f};
+    const SDL_FRect ecologyCard {panel.x + 14.0f, textY, panel.w - 28.0f, 136.0f};
     drawCard(ecologyCard, "Ecology Drift");
     const SDL_FRect roleGraph {ecologyCard.x + 10.0f, ecologyCard.y + 36.0f, ecologyCard.w - 20.0f, 54.0f};
     fillRect(renderer_, roleGraph, {14, 18, 24, 255});
@@ -780,6 +788,9 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     drawText(smallFont_, ecologyCard.x + 12.0f, ecologyCard.y + 96.0f, "avg plant " + formatFloat(stats.avgPlantAffinity, 2), {125, 218, 139, 255});
     drawText(smallFont_, ecologyCard.x + 136.0f, ecologyCard.y + 96.0f, "avg meat " + formatFloat(stats.avgMeatAffinity, 2), {235, 146, 104, 255});
     drawText(smallFont_, ecologyCard.x + 248.0f, ecologyCard.y + 96.0f, "avg mass " + formatFloat(stats.avgMass, 1), {202, 214, 226, 255});
+    drawText(smallFont_, ecologyCard.x + 12.0f, ecologyCard.y + 114.0f, "lineages " + std::to_string(stats.activeLineages), {158, 194, 240, 255});
+    drawText(smallFont_, ecologyCard.x + 136.0f, ecologyCard.y + 114.0f, "dominant " + formatFloat(stats.dominantLineageShare, 2), {206, 212, 220, 255});
+    drawText(smallFont_, ecologyCard.x + 252.0f, ecologyCard.y + 114.0f, "brain " + formatFloat(stats.avgBrainComplexity, 2), {184, 172, 236, 255});
     textY += ecologyCard.h + 10.0f;
 
     const SDL_FRect selectionCard {panel.x + 14.0f, textY, panel.w - 28.0f, panel.y + panel.h - textY - 96.0f};
@@ -789,6 +800,18 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         float sy = selectionCard.y + 36.0f;
         drawText(font_, selectionCard.x + 12.0f, sy, "#" + std::to_string(info.id) + "  " + toString(info.dietClass), {235, 239, 244, 255});
         sy += 22.0f;
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "lineage " + std::to_string(info.lineageId)
+                + (info.lineageParentId > 0 ? " <- " + std::to_string(info.lineageParentId) : "")
+                + " depth " + std::to_string(info.lineageDepth)
+                + " pop " + std::to_string(info.lineagePopulation)
+                + " age " + formatFloat(info.lineageAge, 1),
+            {165, 197, 232, 255}
+        );
+        sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "energy " + formatFloat(info.energy, 1) + "  health " + formatFloat(info.health, 1) + "  age " + formatFloat(info.age, 1), {219, 226, 233, 255});
         sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "mass " + formatFloat(info.mass, 1) + "  body " + formatFloat(info.majorRadius, 1) + " x " + formatFloat(info.minorRadius, 1), {219, 226, 233, 255});
@@ -802,8 +825,17 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "upkeep " + formatFloat(info.upkeep, 1) + "  repro " + formatFloat(info.reproductionThreshold, 1), {179, 194, 210, 255});
         sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "slip " + formatFloat(info.bodySlip, 2) + "  curve " + formatFloat(info.bodyCurvature, 2) + "  flow " + formatFloat(info.flowAlignment, 2), {179, 194, 210, 255});
-        sy += 28.0f;
-        drawText(smallFont_, selectionCard.x + 12.0f, sy, "brain h " + std::to_string(info.brainHiddenCount) + "  conn " + std::to_string(info.brainConnectionCount) + "  load " + formatFloat(info.brainComplexity, 2), {163, 196, 224, 255});
+        sy += 18.0f;
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "brain h " + std::to_string(info.brainHiddenCount)
+                + "  conn " + std::to_string(info.brainConnectionCount)
+                + "  load " + formatFloat(info.brainComplexity, 2)
+                + "  nov " + formatFloat(info.brainNovelty, 2),
+            {163, 196, 224, 255}
+        );
         sy += 20.0f;
         drawText(
             smallFont_,
@@ -851,15 +883,22 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         drawText(font_, selectionCard.x + 12.0f, selectionCard.y + 40.0f, "click a creature to inspect it", {184, 192, 201, 255});
         drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 66.0f, "selection shows body physics, chain stress proxies,", {125, 139, 155, 255});
         drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 84.0f, "controller outputs, topology overlay, and sensor activity.", {125, 139, 155, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 108.0f, "observer picks can lock onto dominant or newly branched lineages.", {125, 139, 155, 255});
     }
 
     const SDL_FRect controlsCard {panel.x + 14.0f, panel.y + panel.h - 86.0f, panel.w - 28.0f, 86.0f};
     drawCard(controlsCard, "Controls");
-    randomSelectButton_ = {controlsCard.x + 12.0f, controlsCard.y + 34.0f, controlsCard.w * 0.48f - 18.0f, 22.0f};
-    topEnergyButton_ = {controlsCard.x + controlsCard.w * 0.52f, controlsCard.y + 34.0f, controlsCard.w * 0.48f - 18.0f, 22.0f};
+    const float buttonGap = 8.0f;
+    const float buttonWidth = (controlsCard.w - 24.0f - buttonGap) * 0.5f;
+    const float buttonHeight = 20.0f;
+    randomSelectButton_ = {controlsCard.x + 12.0f, controlsCard.y + 32.0f, buttonWidth, buttonHeight};
+    topEnergyButton_ = {randomSelectButton_.x + buttonWidth + buttonGap, controlsCard.y + 32.0f, buttonWidth, buttonHeight};
+    dominantLineageButton_ = {controlsCard.x + 12.0f, controlsCard.y + 56.0f, buttonWidth, buttonHeight};
+    newestLineageButton_ = {dominantLineageButton_.x + buttonWidth + buttonGap, controlsCard.y + 56.0f, buttonWidth, buttonHeight};
     drawButton(randomSelectButton_, "random subject (N)", {40, 74, 108, 255}, {227, 235, 241, 255});
     drawButton(topEnergyButton_, "top energy (F)", {54, 98, 84, 255}, {227, 235, 241, 255});
-    drawText(smallFont_, controlsCard.x + 12.0f, controlsCard.y + 61.0f, "space pause  1/2/3 speed  r reseed  c clear  esc quit", {221, 228, 234, 255});
+    drawButton(dominantLineageButton_, "dominant lineage (L)", {79, 70, 126, 255}, {232, 231, 244, 255});
+    drawButton(newestLineageButton_, "newest branch (B)", {120, 76, 54, 255}, {244, 235, 227, 255});
 
     SDL_RenderPresent(renderer_);
 }

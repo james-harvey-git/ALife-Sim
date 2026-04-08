@@ -17,6 +17,10 @@ constexpr std::size_t kMaxPopulation = 900;
 constexpr std::size_t kTargetBlooms = 220;
 constexpr float kBloomRespawnChance = 1.75f;
 constexpr float kSpatialCellSize = 120.0f;
+constexpr std::uint32_t kInputNodeBase = 1;
+constexpr std::uint32_t kMemoryNodeBase = kInputNodeBase + kInputCount;
+constexpr std::uint32_t kOutputNodeBase = kMemoryNodeBase + kMemorySize;
+constexpr std::uint32_t kFirstHiddenNodeId = kOutputNodeBase + kOutputCount;
 
 using NodeKind = BrainGenome::NodeKind;
 using ConnectionGene = BrainGenome::ConnectionGene;
@@ -163,7 +167,116 @@ DietClass classifyDiet(const Genome& genome) {
 float brainComplexityScore(const BrainGenome& brain) {
     const float hiddenLoad = static_cast<float>(brain.hiddenCount) / static_cast<float>(kMaxHiddenCount);
     const float connectionLoad = static_cast<float>(brain.connectionCount) / static_cast<float>(kMaxConnectionCount);
-    return 1.0f + hiddenLoad * 0.8f + connectionLoad * 1.2f;
+    return 1.0f + hiddenLoad * 0.7f + connectionLoad * 0.95f;
+}
+
+std::uint32_t fixedNodeId(NodeKind kind, int index) {
+    switch (kind) {
+        case NodeKind::Input:
+            return kInputNodeBase + static_cast<std::uint32_t>(index);
+        case NodeKind::Memory:
+            return kMemoryNodeBase + static_cast<std::uint32_t>(index);
+        case NodeKind::Output:
+            return kOutputNodeBase + static_cast<std::uint32_t>(index);
+        default:
+            return 0;
+    }
+}
+
+std::uint32_t nodeIdForNode(const BrainGenome& brain, NodeKind kind, int index) {
+    if (kind == NodeKind::Hidden) {
+        return brain.hiddenNodeIds[static_cast<std::size_t>(index)];
+    }
+    return fixedNodeId(kind, index);
+}
+
+std::uint32_t registerInnovation(
+    std::vector<InnovationRecord>& innovations,
+    std::uint32_t& nextInnovationId,
+    std::uint32_t fromNodeId,
+    std::uint32_t toNodeId
+) {
+    for (const InnovationRecord& record : innovations) {
+        if (record.fromNodeId == fromNodeId && record.toNodeId == toNodeId) {
+            return record.innovation;
+        }
+    }
+
+    const std::uint32_t innovation = nextInnovationId++;
+    innovations.push_back(InnovationRecord {
+        .fromNodeId = fromNodeId,
+        .toNodeId = toNodeId,
+        .innovation = innovation
+    });
+    return innovation;
+}
+
+std::uint32_t allocateHiddenNodeId(std::uint32_t& nextHiddenNodeId) {
+    return nextHiddenNodeId++;
+}
+
+struct BrainDistance {
+    float compatibility = 0.0f;
+    float topologyNovelty = 0.0f;
+    int unmatchedInnovations = 0;
+};
+
+BrainDistance compareBrains(const BrainGenome& lhs, const BrainGenome& rhs) {
+    std::vector<ConnectionGene> leftConnections;
+    std::vector<ConnectionGene> rightConnections;
+    leftConnections.reserve(static_cast<std::size_t>(lhs.connectionCount));
+    rightConnections.reserve(static_cast<std::size_t>(rhs.connectionCount));
+
+    for (int index = 0; index < lhs.connectionCount; ++index) {
+        leftConnections.push_back(lhs.connections[index]);
+    }
+    for (int index = 0; index < rhs.connectionCount; ++index) {
+        rightConnections.push_back(rhs.connections[index]);
+    }
+
+    auto byInnovation = [](const ConnectionGene& a, const ConnectionGene& b) {
+        return a.innovation < b.innovation;
+    };
+    std::sort(leftConnections.begin(), leftConnections.end(), byInnovation);
+    std::sort(rightConnections.begin(), rightConnections.end(), byInnovation);
+
+    int leftIndex = 0;
+    int rightIndex = 0;
+    int matching = 0;
+    int disjoint = 0;
+    int excess = 0;
+    float weightDifference = 0.0f;
+
+    while (leftIndex < static_cast<int>(leftConnections.size()) && rightIndex < static_cast<int>(rightConnections.size())) {
+        const ConnectionGene& left = leftConnections[static_cast<std::size_t>(leftIndex)];
+        const ConnectionGene& right = rightConnections[static_cast<std::size_t>(rightIndex)];
+        if (left.innovation == right.innovation) {
+            ++matching;
+            weightDifference += std::abs(left.weight - right.weight);
+            ++leftIndex;
+            ++rightIndex;
+            continue;
+        }
+        if (left.innovation < right.innovation) {
+            ++disjoint;
+            ++leftIndex;
+        } else {
+            ++disjoint;
+            ++rightIndex;
+        }
+    }
+
+    excess += static_cast<int>(leftConnections.size()) - leftIndex;
+    excess += static_cast<int>(rightConnections.size()) - rightIndex;
+
+    const float normalizer = std::max(12.0f, static_cast<float>(std::max(lhs.connectionCount, rhs.connectionCount)));
+    const float hiddenGap = static_cast<float>(std::abs(lhs.hiddenCount - rhs.hiddenCount));
+    const float averageWeightDifference = matching > 0 ? weightDifference / static_cast<float>(matching) : 0.45f;
+    BrainDistance distance {};
+    distance.unmatchedInnovations = disjoint + excess;
+    distance.topologyNovelty = hiddenGap * 0.24f + static_cast<float>(distance.unmatchedInnovations) / normalizer;
+    distance.compatibility = distance.topologyNovelty * 0.95f + averageWeightDifference * 0.32f;
+    return distance;
 }
 
 Traits deriveTraits(const Genome& genome) {
@@ -277,6 +390,8 @@ bool canConnect(
 
 void appendConnection(
     BrainGenome& brain,
+    std::vector<InnovationRecord>& innovations,
+    std::uint32_t& nextInnovationId,
     NodeKind fromKind,
     int fromIndex,
     NodeKind toKind,
@@ -286,13 +401,16 @@ void appendConnection(
     if (brain.connectionCount >= kMaxConnectionCount || !canConnect(brain, fromKind, fromIndex, toKind, toIndex)) {
         return;
     }
+    const std::uint32_t fromNodeId = nodeIdForNode(brain, fromKind, fromIndex);
+    const std::uint32_t toNodeId = nodeIdForNode(brain, toKind, toIndex);
 
     brain.connections[brain.connectionCount++] = ConnectionGene {
         .fromKind = fromKind,
         .fromIndex = static_cast<std::uint8_t>(fromIndex),
         .toKind = toKind,
         .toIndex = static_cast<std::uint8_t>(toIndex),
-        .weight = weight
+        .weight = weight,
+        .innovation = registerInnovation(innovations, nextInnovationId, fromNodeId, toNodeId)
     };
 }
 
@@ -318,6 +436,7 @@ void compactBrain(BrainGenome& brain) {
     std::array<int, kMaxHiddenCount> remap {};
     remap.fill(-1);
     std::array<float, kMaxHiddenCount> newBias {};
+    std::array<std::uint32_t, kMaxHiddenCount> newHiddenNodeIds {};
     int newHiddenCount = 0;
     for (int hiddenIndex = 0; hiddenIndex < brain.hiddenCount; ++hiddenIndex) {
         if (!keepHidden[hiddenIndex]) {
@@ -325,6 +444,7 @@ void compactBrain(BrainGenome& brain) {
         }
         remap[hiddenIndex] = newHiddenCount;
         newBias[newHiddenCount] = brain.hiddenBias[hiddenIndex];
+        newHiddenNodeIds[newHiddenCount] = brain.hiddenNodeIds[hiddenIndex];
         ++newHiddenCount;
     }
 
@@ -370,11 +490,18 @@ void compactBrain(BrainGenome& brain) {
 
     brain.hiddenCount = newHiddenCount;
     brain.hiddenBias = newBias;
+    brain.hiddenNodeIds = newHiddenNodeIds;
     brain.connectionCount = newConnectionCount;
     brain.connections = newConnections;
 }
 
-bool addRandomConnection(BrainGenome& brain, std::mt19937_64& rng, float volatility) {
+bool addRandomConnection(
+    BrainGenome& brain,
+    std::mt19937_64& rng,
+    float volatility,
+    std::vector<InnovationRecord>& innovations,
+    std::uint32_t& nextInnovationId
+) {
     if (brain.connectionCount >= kMaxConnectionCount) {
         return false;
     }
@@ -455,6 +582,8 @@ bool addRandomConnection(BrainGenome& brain, std::mt19937_64& rng, float volatil
     const ConnectionGene& candidate = candidates[static_cast<std::size_t>(randomInt(rng, 0, static_cast<int>(candidates.size()) - 1))];
     appendConnection(
         brain,
+        innovations,
+        nextInnovationId,
         candidate.fromKind,
         candidate.fromIndex,
         candidate.toKind,
@@ -464,7 +593,13 @@ bool addRandomConnection(BrainGenome& brain, std::mt19937_64& rng, float volatil
     return true;
 }
 
-bool addRandomHidden(BrainGenome& brain, std::mt19937_64& rng) {
+bool addRandomHidden(
+    BrainGenome& brain,
+    std::mt19937_64& rng,
+    std::vector<InnovationRecord>& innovations,
+    std::uint32_t& nextInnovationId,
+    std::uint32_t& nextHiddenNodeId
+) {
     if (brain.hiddenCount >= kMaxHiddenCount || brain.connectionCount >= kMaxConnectionCount) {
         return false;
     }
@@ -482,16 +617,25 @@ bool addRandomHidden(BrainGenome& brain, std::mt19937_64& rng) {
     const int splitIndex = splittableConnections[static_cast<std::size_t>(randomInt(rng, 0, static_cast<int>(splittableConnections.size()) - 1))];
     const ConnectionGene original = brain.connections[splitIndex];
     const int newHiddenIndex = brain.hiddenCount++;
+    brain.hiddenNodeIds[newHiddenIndex] = allocateHiddenNodeId(nextHiddenNodeId);
     brain.hiddenBias[newHiddenIndex] = randomFloat(rng, -0.12f, 0.12f);
     brain.connections[splitIndex] = ConnectionGene {
         .fromKind = original.fromKind,
         .fromIndex = original.fromIndex,
         .toKind = NodeKind::Hidden,
         .toIndex = static_cast<std::uint8_t>(newHiddenIndex),
-        .weight = 1.0f
+        .weight = 1.0f,
+        .innovation = registerInnovation(
+            innovations,
+            nextInnovationId,
+            nodeIdForNode(brain, original.fromKind, original.fromIndex),
+            nodeIdForNode(brain, NodeKind::Hidden, newHiddenIndex)
+        )
     };
     appendConnection(
         brain,
+        innovations,
+        nextInnovationId,
         NodeKind::Hidden,
         newHiddenIndex,
         NodeKind::Output,
@@ -519,7 +663,12 @@ float sourceNodeValue(
     }
 }
 
-Genome makeAncestorGenome(std::mt19937_64& rng) {
+Genome makeAncestorGenome(
+    std::mt19937_64& rng,
+    std::vector<InnovationRecord>& innovations,
+    std::uint32_t& nextInnovationId,
+    std::uint32_t& nextHiddenNodeId
+) {
     Genome genome {};
 
     genome.morphology.coreSize = 0.55f;
@@ -558,69 +707,72 @@ Genome makeAncestorGenome(std::mt19937_64& rng) {
     }
 
     genome.brain.hiddenCount = 8;
+    for (int hiddenIndex = 0; hiddenIndex < genome.brain.hiddenCount; ++hiddenIndex) {
+        genome.brain.hiddenNodeIds[hiddenIndex] = allocateHiddenNodeId(nextHiddenNodeId);
+    }
 
-    appendConnection(genome.brain, NodeKind::Input, 10, NodeKind::Hidden, 0, 2.4f);
-    appendConnection(genome.brain, NodeKind::Input, 29, NodeKind::Hidden, 0, 1.0f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 10, NodeKind::Hidden, 0, 2.4f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 29, NodeKind::Hidden, 0, 1.0f);
     genome.brain.hiddenBias[0] = -0.15f;
 
-    appendConnection(genome.brain, NodeKind::Input, 0, NodeKind::Hidden, 1, 1.7f);
-    appendConnection(genome.brain, NodeKind::Input, 5, NodeKind::Hidden, 1, 1.8f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 0, NodeKind::Hidden, 1, 1.7f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 5, NodeKind::Hidden, 1, 1.8f);
     genome.brain.hiddenBias[1] = -0.25f;
 
-    appendConnection(genome.brain, NodeKind::Input, 15, NodeKind::Hidden, 2, 1.8f);
-    appendConnection(genome.brain, NodeKind::Input, 20, NodeKind::Hidden, 2, 1.7f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 15, NodeKind::Hidden, 2, 1.8f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 20, NodeKind::Hidden, 2, 1.7f);
     genome.brain.hiddenBias[2] = -0.25f;
 
-    appendConnection(genome.brain, NodeKind::Input, 25, NodeKind::Hidden, 3, -2.2f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 25, NodeKind::Hidden, 3, -2.2f);
     genome.brain.hiddenBias[3] = 0.95f;
 
-    appendConnection(genome.brain, NodeKind::Input, 11, NodeKind::Hidden, 4, 1.7f);
-    appendConnection(genome.brain, NodeKind::Input, 12, NodeKind::Hidden, 4, 2.0f);
-    appendConnection(genome.brain, NodeKind::Input, 16, NodeKind::Hidden, 4, 1.1f);
-    appendConnection(genome.brain, NodeKind::Input, 17, NodeKind::Hidden, 4, 1.2f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 11, NodeKind::Hidden, 4, 1.7f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 12, NodeKind::Hidden, 4, 2.0f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 16, NodeKind::Hidden, 4, 1.1f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 17, NodeKind::Hidden, 4, 1.2f);
     genome.brain.hiddenBias[4] = -0.35f;
 
-    appendConnection(genome.brain, NodeKind::Input, 3, NodeKind::Hidden, 5, 1.8f);
-    appendConnection(genome.brain, NodeKind::Input, 8, NodeKind::Hidden, 5, 1.4f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 3, NodeKind::Hidden, 5, 1.8f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 8, NodeKind::Hidden, 5, 1.4f);
     genome.brain.hiddenBias[5] = -0.3f;
 
-    appendConnection(genome.brain, NodeKind::Input, 18, NodeKind::Hidden, 6, 1.4f);
-    appendConnection(genome.brain, NodeKind::Input, 23, NodeKind::Hidden, 6, 1.8f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 18, NodeKind::Hidden, 6, 1.4f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 23, NodeKind::Hidden, 6, 1.8f);
     genome.brain.hiddenBias[6] = -0.3f;
 
-    appendConnection(genome.brain, NodeKind::Input, 25, NodeKind::Hidden, 7, 2.4f);
-    appendConnection(genome.brain, NodeKind::Input, 26, NodeKind::Hidden, 7, 0.8f);
-    appendConnection(genome.brain, NodeKind::Input, 27, NodeKind::Hidden, 7, 1.8f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 25, NodeKind::Hidden, 7, 2.4f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 26, NodeKind::Hidden, 7, 0.8f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 27, NodeKind::Hidden, 7, 1.8f);
     genome.brain.hiddenBias[7] = -1.7f;
 
-    appendConnection(genome.brain, NodeKind::Hidden, 1, NodeKind::Output, 0, 1.0f);
-    appendConnection(genome.brain, NodeKind::Hidden, 2, NodeKind::Output, 0, -1.0f);
-    appendConnection(genome.brain, NodeKind::Hidden, 5, NodeKind::Output, 0, 0.75f);
-    appendConnection(genome.brain, NodeKind::Hidden, 6, NodeKind::Output, 0, -0.75f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 1, NodeKind::Output, 0, 1.0f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 2, NodeKind::Output, 0, -1.0f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 5, NodeKind::Output, 0, 0.75f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 6, NodeKind::Output, 0, -0.75f);
     genome.brain.outputBias[0] = 0.05f;
 
-    appendConnection(genome.brain, NodeKind::Hidden, 0, NodeKind::Output, 1, 1.3f);
-    appendConnection(genome.brain, NodeKind::Hidden, 1, NodeKind::Output, 1, 0.6f);
-    appendConnection(genome.brain, NodeKind::Hidden, 2, NodeKind::Output, 1, 0.6f);
-    appendConnection(genome.brain, NodeKind::Hidden, 3, NodeKind::Output, 1, 1.0f);
-    appendConnection(genome.brain, NodeKind::Hidden, 5, NodeKind::Output, 1, -0.55f);
-    appendConnection(genome.brain, NodeKind::Hidden, 6, NodeKind::Output, 1, -0.55f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 0, NodeKind::Output, 1, 1.3f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 1, NodeKind::Output, 1, 0.6f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 2, NodeKind::Output, 1, 0.6f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 3, NodeKind::Output, 1, 1.0f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 5, NodeKind::Output, 1, -0.55f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 6, NodeKind::Output, 1, -0.55f);
     genome.brain.outputBias[1] = 0.2f;
 
-    appendConnection(genome.brain, NodeKind::Hidden, 0, NodeKind::Output, 2, 1.4f);
-    appendConnection(genome.brain, NodeKind::Hidden, 1, NodeKind::Output, 2, 0.7f);
-    appendConnection(genome.brain, NodeKind::Hidden, 2, NodeKind::Output, 2, 0.7f);
-    appendConnection(genome.brain, NodeKind::Hidden, 3, NodeKind::Output, 2, 0.7f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 0, NodeKind::Output, 2, 1.4f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 1, NodeKind::Output, 2, 0.7f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 2, NodeKind::Output, 2, 0.7f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 3, NodeKind::Output, 2, 0.7f);
     genome.brain.outputBias[2] = 0.35f;
 
-    appendConnection(genome.brain, NodeKind::Hidden, 4, NodeKind::Output, 3, 1.4f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 4, NodeKind::Output, 3, 1.4f);
     genome.brain.outputBias[3] = -0.55f;
 
-    appendConnection(genome.brain, NodeKind::Hidden, 5, NodeKind::Output, 4, 0.9f);
-    appendConnection(genome.brain, NodeKind::Hidden, 6, NodeKind::Output, 4, 0.9f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 5, NodeKind::Output, 4, 0.9f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 6, NodeKind::Output, 4, 0.9f);
     genome.brain.outputBias[4] = -0.6f;
 
-    appendConnection(genome.brain, NodeKind::Hidden, 7, NodeKind::Output, 5, 1.8f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 7, NodeKind::Output, 5, 1.8f);
     genome.brain.outputBias[5] = -0.12f;
 
     compactBrain(genome.brain);
@@ -632,7 +784,13 @@ void mutateScalar(std::mt19937_64& rng, float volatility, float& value, float ex
     value = clamp01(value + amount);
 }
 
-Genome mutateGenome(const Genome& parent, std::mt19937_64& rng) {
+Genome mutateGenome(
+    const Genome& parent,
+    std::mt19937_64& rng,
+    std::vector<InnovationRecord>& innovations,
+    std::uint32_t& nextInnovationId,
+    std::uint32_t& nextHiddenNodeId
+) {
     Genome child = parent;
     const float volatility = parent.ecology.mutationVolatility;
 
@@ -688,10 +846,10 @@ Genome mutateGenome(const Genome& parent, std::mt19937_64& rng) {
     }
 
     if (randomFloat(rng, 0.0f, 1.0f) < 0.05f + volatility * 0.09f) {
-        addRandomConnection(child.brain, rng, volatility);
+        addRandomConnection(child.brain, rng, volatility, innovations, nextInnovationId);
     }
-    if (randomFloat(rng, 0.0f, 1.0f) < 0.018f + volatility * 0.05f) {
-        addRandomHidden(child.brain, rng);
+    if (randomFloat(rng, 0.0f, 1.0f) < 0.012f + volatility * 0.035f) {
+        addRandomHidden(child.brain, rng, innovations, nextInnovationId, nextHiddenNodeId);
     }
     if (child.brain.connectionCount > 10 && randomFloat(rng, 0.0f, 1.0f) < 0.016f + volatility * 0.035f) {
         removeConnection(child.brain, randomInt(rng, 0, child.brain.connectionCount - 1));
@@ -998,7 +1156,11 @@ Creature makeCreature(
     float worldWidth,
     float worldHeight,
     Vec2 position,
-    float energy
+    float energy,
+    std::uint32_t lineageId,
+    std::uint8_t lineageDepth,
+    std::uint64_t parentId,
+    float brainNovelty
 ) {
     Creature creature {};
     creature.id = id;
@@ -1016,8 +1178,26 @@ Creature makeCreature(
     creature.age = randomFloat(rng, 0.0f, 20.0f);
     creature.signal = 0.0f;
     creature.gaitPhase = randomFloat(rng, 0.0f, kTau);
+    creature.lineageId = lineageId;
+    creature.lineageDepth = lineageDepth;
+    creature.parentId = parentId;
+    creature.brainNovelty = brainNovelty;
     seedBodyPose(creature, worldWidth, worldHeight);
     return creature;
+}
+
+LineageRecord* findLineage(std::vector<LineageRecord>& lineages, std::uint32_t lineageId) {
+    auto it = std::find_if(lineages.begin(), lineages.end(), [&](const LineageRecord& lineage) {
+        return lineage.id == lineageId;
+    });
+    return it != lineages.end() ? &(*it) : nullptr;
+}
+
+const LineageRecord* findLineage(const std::vector<LineageRecord>& lineages, std::uint32_t lineageId) {
+    auto it = std::find_if(lineages.begin(), lineages.end(), [&](const LineageRecord& lineage) {
+        return lineage.id == lineageId;
+    });
+    return it != lineages.end() ? &(*it) : nullptr;
 }
 
 }  // namespace
@@ -1053,8 +1233,25 @@ void Simulation::reset(std::uint64_t seed) {
     blooms_.clear();
     carrion_.clear();
     history_.clear();
+    innovations_.clear();
+    lineages_.clear();
+    nextInnovationId_ = 1;
+    nextHiddenNodeId_ = kFirstHiddenNodeId;
+    nextLineageId_ = 1;
 
-    ancestorGenome_ = makeAncestorGenome(rng_);
+    ancestorGenome_ = makeAncestorGenome(rng_, innovations_, nextInnovationId_, nextHiddenNodeId_);
+    lineages_.push_back(LineageRecord {
+        .id = nextLineageId_++,
+        .parentId = 0,
+        .depth = 0,
+        .founderCreatureId = 0,
+        .founderTime = 0.0f,
+        .noveltyAtBranch = 0.0f,
+        .lastSeenTime = 0.0f,
+        .currentPopulation = 0,
+        .peakPopulation = kInitialPopulation,
+        .avgBrainComplexity = brainComplexityScore(ancestorGenome_.brain)
+    });
 
     for (std::size_t index = 0; index < kInitialPopulation; ++index) {
         const Vec2 position {
@@ -1068,8 +1265,16 @@ void Simulation::reset(std::uint64_t seed) {
             worldWidth_,
             worldHeight_,
             position,
-            130.0f
+            130.0f,
+            1,
+            0,
+            0,
+            0.0f
         ));
+    }
+    if (!lineages_.empty()) {
+        lineages_.front().currentPopulation = creatures_.size();
+        lineages_.front().peakPopulation = creatures_.size();
     }
 
     for (std::size_t index = 0; index < kTargetBlooms; ++index) {
@@ -1089,11 +1294,19 @@ void Simulation::reset(std::uint64_t seed) {
 
 void Simulation::setSelectedCreature(std::uint64_t id) {
     selectedCreatureId_ = id;
+    trackedLineageId_ = 0;
+    if (const auto it = std::find_if(creatures_.begin(), creatures_.end(), [&](const Creature& creature) {
+            return creature.id == id;
+        });
+        it != creatures_.end()) {
+        trackedLineageId_ = it->lineageId;
+    }
     autoSelectionEnabled_ = true;
 }
 
 void Simulation::clearSelection() {
     selectedCreatureId_ = 0;
+    trackedLineageId_ = 0;
     autoSelectionEnabled_ = false;
 }
 
@@ -1104,11 +1317,14 @@ std::uint64_t Simulation::selectedCreature() const {
 bool Simulation::selectRandomCreature() {
     if (creatures_.empty()) {
         selectedCreatureId_ = 0;
+        trackedLineageId_ = 0;
         return false;
     }
 
     const int index = randomInt(rng_, 0, static_cast<int>(creatures_.size()) - 1);
-    selectedCreatureId_ = creatures_[static_cast<std::size_t>(index)].id;
+    const Creature& creature = creatures_[static_cast<std::size_t>(index)];
+    selectedCreatureId_ = creature.id;
+    trackedLineageId_ = creature.lineageId;
     autoSelectionEnabled_ = true;
     return true;
 }
@@ -1116,6 +1332,7 @@ bool Simulation::selectRandomCreature() {
 bool Simulation::selectTopEnergyCreature() {
     if (creatures_.empty()) {
         selectedCreatureId_ = 0;
+        trackedLineageId_ = 0;
         return false;
     }
 
@@ -1124,12 +1341,96 @@ bool Simulation::selectTopEnergyCreature() {
     });
     if (it == creatures_.end()) {
         selectedCreatureId_ = 0;
+        trackedLineageId_ = 0;
         return false;
     }
 
     selectedCreatureId_ = it->id;
+    trackedLineageId_ = it->lineageId;
     autoSelectionEnabled_ = true;
     return true;
+}
+
+bool Simulation::selectRepresentativeInLineage(std::uint32_t lineageId) {
+    if (lineageId == 0) {
+        return false;
+    }
+
+    const Creature* best = nullptr;
+    for (const Creature& creature : creatures_) {
+        if (!creature.alive || creature.lineageId != lineageId) {
+            continue;
+        }
+        if (best == nullptr
+            || creature.energy > best->energy
+            || (creature.energy == best->energy && creature.brainNovelty > best->brainNovelty)) {
+            best = &creature;
+        }
+    }
+
+    if (best == nullptr) {
+        if (trackedLineageId_ == lineageId) {
+            selectedCreatureId_ = 0;
+        }
+        return false;
+    }
+
+    selectedCreatureId_ = best->id;
+    trackedLineageId_ = best->lineageId;
+    autoSelectionEnabled_ = true;
+    return true;
+}
+
+bool Simulation::selectDominantLineageCreature() {
+    if (creatures_.empty()) {
+        selectedCreatureId_ = 0;
+        trackedLineageId_ = 0;
+        return false;
+    }
+
+    const LineageRecord* dominant = nullptr;
+    for (const LineageRecord& lineage : lineages_) {
+        if (lineage.currentPopulation == 0) {
+            continue;
+        }
+        if (dominant == nullptr
+            || lineage.currentPopulation > dominant->currentPopulation
+            || (lineage.currentPopulation == dominant->currentPopulation && lineage.peakPopulation > dominant->peakPopulation)) {
+            dominant = &lineage;
+        }
+    }
+
+    if (dominant != nullptr && selectRepresentativeInLineage(dominant->id)) {
+        return true;
+    }
+
+    return selectTopEnergyCreature();
+}
+
+bool Simulation::selectNewestLineageCreature() {
+    if (creatures_.empty()) {
+        selectedCreatureId_ = 0;
+        trackedLineageId_ = 0;
+        return false;
+    }
+
+    const LineageRecord* newest = nullptr;
+    for (const LineageRecord& lineage : lineages_) {
+        if (lineage.currentPopulation == 0) {
+            continue;
+        }
+        if (newest == nullptr
+            || lineage.founderTime > newest->founderTime
+            || (lineage.founderTime == newest->founderTime && lineage.id > newest->id)) {
+            newest = &lineage;
+        }
+    }
+
+    if (newest != nullptr && selectRepresentativeInLineage(newest->id)) {
+        return true;
+    }
+
+    return selectTopEnergyCreature();
 }
 
 const std::vector<Creature>& Simulation::creatures() const {
@@ -1233,6 +1534,9 @@ SelectionInfo Simulation::selectionInfo() const {
     info.bodyCurvature = it->bodyCurvature;
     info.bodySlip = it->bodySlip;
     info.flowAlignment = it->flowAlignment;
+    info.lineageId = it->lineageId;
+    info.lineageDepth = it->lineageDepth;
+    info.brainNovelty = it->brainNovelty;
     info.brainHiddenCount = it->genome.brain.hiddenCount;
     info.brainConnectionCount = it->genome.brain.connectionCount;
     info.brainComplexity = brainComplexityScore(it->genome.brain);
@@ -1249,6 +1553,12 @@ SelectionInfo Simulation::selectionInfo() const {
         info.opportunitySense[bucket] = it->lastInputs[base + 2];
         info.threatSense[bucket] = it->lastInputs[base + 3];
         info.signalSense[bucket] = it->lastInputs[base + 4];
+    }
+
+    if (const LineageRecord* lineage = findLineage(lineages_, it->lineageId)) {
+        info.lineageParentId = lineage->parentId;
+        info.lineagePopulation = lineage->currentPopulation;
+        info.lineageAge = timeSeconds_ - lineage->founderTime;
     }
 
     return info;
@@ -1663,7 +1973,37 @@ void Simulation::step(float dt) {
             && creature.energy > creature.traits.reproductionThreshold * 0.92f
             && creature.age > 18.0f
             && creatures_.size() + pendingSpawns.size() < kMaxPopulation) {
-            const Genome childGenome = mutateGenome(creature.genome, rng_);
+            const Genome childGenome = mutateGenome(
+                creature.genome,
+                rng_,
+                innovations_,
+                nextInnovationId_,
+                nextHiddenNodeId_
+            );
+            const BrainDistance brainDistance = compareBrains(childGenome.brain, creature.genome.brain);
+            std::uint32_t childLineageId = creature.lineageId;
+            std::uint8_t childLineageDepth = creature.lineageDepth;
+            const int structuralDelta = std::abs(childGenome.brain.hiddenCount - creature.genome.brain.hiddenCount)
+                + std::abs(childGenome.brain.connectionCount - creature.genome.brain.connectionCount);
+            const bool branchLineage = (childGenome.brain.hiddenCount > creature.genome.brain.hiddenCount && brainDistance.topologyNovelty > 0.12f)
+                || (structuralDelta >= 3 && brainDistance.compatibility > 0.3f)
+                || brainDistance.compatibility > 0.52f;
+            if (branchLineage) {
+                childLineageId = nextLineageId_++;
+                childLineageDepth = static_cast<std::uint8_t>(std::min<int>(255, creature.lineageDepth + 1));
+                lineages_.push_back(LineageRecord {
+                    .id = childLineageId,
+                    .parentId = creature.lineageId,
+                    .depth = childLineageDepth,
+                    .founderCreatureId = nextCreatureId_,
+                    .founderTime = timeSeconds_,
+                    .noveltyAtBranch = brainDistance.compatibility,
+                    .lastSeenTime = timeSeconds_,
+                    .currentPopulation = 0,
+                    .peakPopulation = 0,
+                    .avgBrainComplexity = 0.0f
+                });
+            }
             const float childEnergy = std::min(creature.energy * 0.46f, creature.traits.offspringEnergy * 1.35f);
             creature.energy -= childEnergy;
             creature.health -= childEnergy * 0.03f;
@@ -1679,7 +2019,11 @@ void Simulation::step(float dt) {
                 worldWidth_,
                 worldHeight_,
                 creature.position + offset,
-                std::max(28.0f, childEnergy * 0.78f)
+                std::max(28.0f, childEnergy * 0.78f),
+                childLineageId,
+                childLineageDepth,
+                creature.id,
+                brainDistance.compatibility
             ));
             pendingSpawns.back().age = 0.0f;
             pendingSpawns.back().velocity = creature.velocity * 0.35f;
@@ -1718,7 +2062,11 @@ void Simulation::step(float dt) {
     }
 
     if (autoSelectionEnabled_ && selectedCreatureId_ == 0 && !creatures_.empty()) {
-        selectTopEnergyCreature();
+        if (trackedLineageId_ != 0 && selectRepresentativeInLineage(trackedLineageId_)) {
+            // Keep the observer anchored to the same clade when a watched individual dies.
+        } else if (!selectDominantLineageCreature()) {
+            selectTopEnergyCreature();
+        }
     }
 
     if (creatures_.empty()) {
@@ -1737,12 +2085,30 @@ void Simulation::step(float dt) {
     stats_.avgMeatAffinity = 0.0f;
     stats_.avgMass = 0.0f;
     stats_.avgSpeed = 0.0f;
+    stats_.avgBrainComplexity = 0.0f;
+    stats_.avgBrainConnections = 0.0f;
+    stats_.activeLineages = 0;
+    stats_.dominantLineageShare = 0.0f;
+
+    for (LineageRecord& lineage : lineages_) {
+        lineage.currentPopulation = 0;
+        lineage.avgBrainComplexity = 0.0f;
+    }
 
     for (const Creature& creature : creatures_) {
         stats_.avgPlantAffinity += creature.genome.ecology.plantAffinity;
         stats_.avgMeatAffinity += creature.genome.ecology.meatAffinity;
         stats_.avgMass += creature.traits.mass;
         stats_.avgSpeed += length(creature.velocity);
+        stats_.avgBrainComplexity += brainComplexityScore(creature.genome.brain);
+        stats_.avgBrainConnections += static_cast<float>(creature.genome.brain.connectionCount);
+
+        if (LineageRecord* lineage = findLineage(lineages_, creature.lineageId)) {
+            ++lineage->currentPopulation;
+            lineage->peakPopulation = std::max(lineage->peakPopulation, lineage->currentPopulation);
+            lineage->avgBrainComplexity += brainComplexityScore(creature.genome.brain);
+            lineage->lastSeenTime = timeSeconds_;
+        }
 
         switch (classifyDiet(creature.genome)) {
             case DietClass::Grazer:
@@ -1762,6 +2128,21 @@ void Simulation::step(float dt) {
     stats_.avgMeatAffinity /= divisor;
     stats_.avgMass /= divisor;
     stats_.avgSpeed /= divisor;
+    stats_.avgBrainComplexity /= divisor;
+    stats_.avgBrainConnections /= divisor;
+
+    std::size_t dominantLineagePopulation = 0;
+    for (LineageRecord& lineage : lineages_) {
+        if (lineage.currentPopulation == 0) {
+            continue;
+        }
+        ++stats_.activeLineages;
+        dominantLineagePopulation = std::max(dominantLineagePopulation, lineage.currentPopulation);
+        lineage.avgBrainComplexity /= static_cast<float>(lineage.currentPopulation);
+    }
+    stats_.dominantLineageShare = dominantLineagePopulation > 0
+        ? static_cast<float>(dominantLineagePopulation) / divisor
+        : 0.0f;
 
     historyAccumulator_ += dt;
     if (historyAccumulator_ >= 0.5f) {
@@ -1774,9 +2155,12 @@ void Simulation::step(float dt) {
             .avgPlantAffinity = stats_.avgPlantAffinity,
             .avgMeatAffinity = stats_.avgMeatAffinity,
             .avgMass = stats_.avgMass,
+            .avgBrainComplexity = stats_.avgBrainComplexity,
             .grazers = stats_.grazers,
             .omnivores = stats_.omnivores,
-            .hunters = stats_.hunters
+            .hunters = stats_.hunters,
+            .activeLineages = stats_.activeLineages,
+            .dominantLineageShare = stats_.dominantLineageShare
         });
         while (history_.size() > 180) {
             history_.pop_front();

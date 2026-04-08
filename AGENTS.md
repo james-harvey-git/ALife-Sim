@@ -45,9 +45,11 @@ The long-term goal is not a scripted predator/prey toy. The goal is a watchable,
 - Articulated segmented body chains with persistent per-segment state, flow-coupled lag, and segment-aware collisions.
 - Morphology-derived thrust, drag, turning, bite reach, sensing, upkeep, and reproduction thresholds.
 - Toroidal world with nutrient field, current field, blooms, and carrion.
-- Sparse topology-evolving controller with bucketed sensory inputs plus recurrent memory channels.
-- Native inspection HUD with history graphs, ecology drift, a live brain-topology overlay, and selection readouts including slip/curvature-style body metrics.
-- The app now boots with a subject selected, and the HUD exposes explicit observer picks (`random subject`, `top energy`) to support QA and watchability.
+- Sparse topology-evolving controller with innovation-aware structural mutations, bucketed sensory inputs, and recurrent memory channels.
+- Branching lineage tracking for major brain-topology divergences so structural novelty can be observed as clades instead of anonymous drift.
+- Native inspection HUD with history graphs, ecology drift, lineage telemetry, a live brain-topology overlay, and selection readouts including slip/curvature-style body metrics.
+- The app now boots with a subject selected, and the HUD exposes explicit observer picks (`random subject`, `top energy`, `dominant lineage`, `newest branch`) to support QA and watchability.
+- Observer selection is lineage-aware: when a watched creature dies, the sim should try to stay on that clade instead of immediately jumping to an unrelated organism.
 
 ## Important Design Rule
 
@@ -104,6 +106,7 @@ Run headless smoke tests:
 ./build/alife_sim --smoke-test --seed 1
 ./build/alife_sim --smoke-test --seed 2
 ./build/alife_sim --smoke-test --seed 3
+./build/alife_sim --smoke-test --seed 2 --smoke-steps 10800
 ```
 
 Use multiple seeds when changing simulation dynamics.

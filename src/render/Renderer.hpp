@@ -14,7 +14,9 @@ public:
     enum class UiAction {
         None,
         SelectRandom,
-        SelectTopEnergy
+        SelectTopEnergy,
+        SelectDominantLineage,
+        SelectNewestLineage
     };
 
     Renderer() = default;
@@ -42,6 +44,8 @@ private:
     SDL_FRect worldViewport_ {static_cast<float>(kMargin), static_cast<float>(kMargin), 100.0f, 100.0f};
     SDL_FRect randomSelectButton_ {0.0f, 0.0f, 0.0f, 0.0f};
     SDL_FRect topEnergyButton_ {0.0f, 0.0f, 0.0f, 0.0f};
+    SDL_FRect dominantLineageButton_ {0.0f, 0.0f, 0.0f, 0.0f};
+    SDL_FRect newestLineageButton_ {0.0f, 0.0f, 0.0f, 0.0f};
 
     void updateViewport(const Simulation& simulation);
 };

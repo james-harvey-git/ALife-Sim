@@ -34,11 +34,12 @@ The first playable milestone in this repo includes:
 
 - toroidal water world with nutrient-driven bloom patches
 - current field that nudges body motion
-- sparse topology-evolving controllers with recurrent memory inputs
+- sparse topology-evolving controllers with innovation-aware structural mutations and recurrent memory inputs
 - segmented phenotypes with articulated body chains, flow-coupled lag, and body-part collision envelopes
 - grazing, carrion feeding, and live predation
 - reproduction with mutation from a single ancestor genome
-- native HUD with history graphs, ecology drift readouts, live brain topology overlay, and observer controls
+- branching lineage tracking for major brain-topology divergences
+- native HUD with history graphs, ecology drift readouts, lineage telemetry, live brain topology overlay, and lineage-aware observer controls
 
 This is intentionally still an early foundation. The long-term plan is to grow from these articulated soft-body approximations toward richer jointed morphologies, stronger environmental physics, and deeper lineage/ecology observability.
 
@@ -51,11 +52,13 @@ This is intentionally still an early foundation. The long-term plan is to grow f
 - `R`: reseed the world
 - `N`: select a random subject
 - `F`: select the highest-energy subject
+- `L`: select a representative from the dominant lineage
+- `B`: select a representative from the newest active branch
 - `C`: clear selection
 - `Left Click`: select the nearest creature in the sim view
 - `Esc`: quit
 
-On launch, the sim now starts with one creature already selected so the brain overlay and inspection readouts are immediately visible.
+On launch, the sim starts with one creature already selected so the brain overlay and inspection readouts are immediately visible. If a watched creature dies, the observer now tries to stay locked onto the same lineage before falling back to broader picks.
 
 ## Build
 
@@ -74,6 +77,12 @@ Run a non-graphical smoke test:
 
 ```bash
 ./build/alife_sim --smoke-test
+```
+
+Run a longer headless probe:
+
+```bash
+./build/alife_sim --smoke-test --seed 2 --smoke-steps 10800
 ```
 
 ## Repo Layout

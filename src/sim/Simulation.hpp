@@ -46,11 +46,13 @@ struct BrainGenome {
         NodeKind toKind = NodeKind::Output;
         std::uint8_t toIndex = 0;
         float weight = 0.0f;
+        std::uint32_t innovation = 0;
     };
 
     int hiddenCount = 0;
     int connectionCount = 0;
     std::array<ConnectionGene, kMaxConnectionCount> connections {};
+    std::array<std::uint32_t, kMaxHiddenCount> hiddenNodeIds {};
     std::array<float, kMaxHiddenCount> hiddenBias {};
     std::array<float, kOutputCount> outputBias {};
     std::array<float, kOutputCount * kMemorySize> memoryWeights {};
@@ -135,6 +137,10 @@ struct Creature {
     float bodyCurvature = 0.0f;
     float bodySlip = 0.0f;
     float flowAlignment = 0.0f;
+    std::uint32_t lineageId = 0;
+    std::uint8_t lineageDepth = 0;
+    std::uint64_t parentId = 0;
+    float brainNovelty = 0.0f;
     bool alive = true;
     std::array<float, kMemorySize> memory {};
     std::array<float, kMaxHiddenCount> hiddenActivations {};
@@ -169,10 +175,14 @@ struct Stats {
     float avgMeatAffinity = 0.0f;
     float avgMass = 0.0f;
     float avgSpeed = 0.0f;
+    float avgBrainComplexity = 0.0f;
+    float avgBrainConnections = 0.0f;
     float season = 0.0f;
     int grazers = 0;
     int omnivores = 0;
     int hunters = 0;
+    int activeLineages = 0;
+    float dominantLineageShare = 0.0f;
 };
 
 struct HistorySample {
@@ -183,9 +193,12 @@ struct HistorySample {
     float avgPlantAffinity = 0.0f;
     float avgMeatAffinity = 0.0f;
     float avgMass = 0.0f;
+    float avgBrainComplexity = 0.0f;
     int grazers = 0;
     int omnivores = 0;
     int hunters = 0;
+    int activeLineages = 0;
+    float dominantLineageShare = 0.0f;
 };
 
 struct SelectionInfo {
@@ -214,6 +227,12 @@ struct SelectionInfo {
     float bodyCurvature = 0.0f;
     float bodySlip = 0.0f;
     float flowAlignment = 0.0f;
+    std::uint32_t lineageId = 0;
+    std::uint32_t lineageParentId = 0;
+    std::size_t lineagePopulation = 0;
+    std::uint8_t lineageDepth = 0;
+    float lineageAge = 0.0f;
+    float brainNovelty = 0.0f;
     int brainHiddenCount = 0;
     int brainConnectionCount = 0;
     float brainComplexity = 0.0f;
@@ -229,6 +248,25 @@ struct SelectionInfo {
     std::array<float, kSensorBuckets> signalSense {};
 };
 
+struct InnovationRecord {
+    std::uint32_t fromNodeId = 0;
+    std::uint32_t toNodeId = 0;
+    std::uint32_t innovation = 0;
+};
+
+struct LineageRecord {
+    std::uint32_t id = 0;
+    std::uint32_t parentId = 0;
+    std::uint8_t depth = 0;
+    std::uint64_t founderCreatureId = 0;
+    float founderTime = 0.0f;
+    float noveltyAtBranch = 0.0f;
+    float lastSeenTime = 0.0f;
+    std::size_t currentPopulation = 0;
+    std::size_t peakPopulation = 0;
+    float avgBrainComplexity = 0.0f;
+};
+
 class Simulation {
 public:
     Simulation();
@@ -241,6 +279,8 @@ public:
     std::uint64_t selectedCreature() const;
     bool selectRandomCreature();
     bool selectTopEnergyCreature();
+    bool selectDominantLineageCreature();
+    bool selectNewestLineageCreature();
 
     std::optional<std::uint64_t> creatureAt(float worldX, float worldY, float radius) const;
     SelectionInfo selectionInfo() const;
@@ -264,16 +304,24 @@ private:
     std::uint64_t seed_ = 1;
     std::uint64_t nextCreatureId_ = 1;
     std::uint64_t selectedCreatureId_ = 0;
+    std::uint32_t trackedLineageId_ = 0;
     bool autoSelectionEnabled_ = true;
     Stats stats_ {};
     float historyAccumulator_ = 0.0f;
     Genome ancestorGenome_ {};
     std::mt19937_64 rng_ {};
+    std::uint32_t nextInnovationId_ = 1;
+    std::uint32_t nextHiddenNodeId_ = 1;
+    std::uint32_t nextLineageId_ = 1;
 
     std::vector<Creature> creatures_ {};
     std::vector<Bloom> blooms_ {};
     std::vector<Carrion> carrion_ {};
     std::deque<HistorySample> history_ {};
+    std::vector<InnovationRecord> innovations_ {};
+    std::vector<LineageRecord> lineages_ {};
+
+    bool selectRepresentativeInLineage(std::uint32_t lineageId);
 };
 
 std::string toString(DietClass dietClass);

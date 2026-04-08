@@ -14,6 +14,7 @@ namespace {
 struct CliOptions {
     bool smokeTest = false;
     std::uint64_t seed = 1;
+    int smokeSteps = 3600;
 };
 
 CliOptions parseArgs(int argc, char** argv) {
@@ -25,6 +26,8 @@ CliOptions parseArgs(int argc, char** argv) {
             options.smokeTest = true;
         } else if (argument == "--seed" && index + 1 < argc) {
             options.seed = static_cast<std::uint64_t>(std::strtoull(argv[++index], nullptr, 10));
+        } else if (argument == "--smoke-steps" && index + 1 < argc) {
+            options.smokeSteps = std::max(1, std::atoi(argv[++index]));
         }
     }
 
@@ -41,7 +44,7 @@ int main(int argc, char** argv) {
 
     if (options.smokeTest) {
         constexpr float kStep = 1.0f / 60.0f;
-        for (int index = 0; index < 3600; ++index) {
+        for (int index = 0; index < options.smokeSteps; ++index) {
             simulation.step(kStep);
         }
 
@@ -64,8 +67,11 @@ int main(int argc, char** argv) {
             << " carrion=" << stats.carrion
             << " births=" << stats.births
             << " deaths=" << stats.deaths
+            << " lineages=" << stats.activeLineages
+            << " dom_lineage=" << stats.dominantLineageShare
             << " avg_energy=" << averageEnergy
             << " max_energy=" << maxEnergy
+            << " avg_brain_load=" << stats.avgBrainComplexity
             << " avg_repro_threshold=" << averageThreshold
             << '\n';
         return stats.population > 0 ? 0 : 1;
@@ -123,6 +129,12 @@ int main(int argc, char** argv) {
                         case SDLK_f:
                             simulation.selectTopEnergyCreature();
                             break;
+                        case SDLK_l:
+                            simulation.selectDominantLineageCreature();
+                            break;
+                        case SDLK_b:
+                            simulation.selectNewestLineageCreature();
+                            break;
                         default:
                             break;
                     }
@@ -136,6 +148,14 @@ int main(int argc, char** argv) {
                         }
                         if (uiAction == alife::Renderer::UiAction::SelectTopEnergy) {
                             simulation.selectTopEnergyCreature();
+                            break;
+                        }
+                        if (uiAction == alife::Renderer::UiAction::SelectDominantLineage) {
+                            simulation.selectDominantLineageCreature();
+                            break;
+                        }
+                        if (uiAction == alife::Renderer::UiAction::SelectNewestLineage) {
+                            simulation.selectNewestLineageCreature();
                             break;
                         }
                     }
