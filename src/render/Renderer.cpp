@@ -397,6 +397,26 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         const SDL_Color eye = hsv(0.14f, 0.18f, 0.98f);
 
         const SDL_FPoint head = worldToScreen(creature.bodyPoints[0]);
+        const auto wrappedPointToScreen = [&](const Vec2& point) {
+            Vec2 delta {
+                point.x - creature.bodyPoints[0].x,
+                point.y - creature.bodyPoints[0].y
+            };
+            if (delta.x > simulation.worldWidth() * 0.5f) {
+                delta.x -= simulation.worldWidth();
+            } else if (delta.x < -simulation.worldWidth() * 0.5f) {
+                delta.x += simulation.worldWidth();
+            }
+            if (delta.y > simulation.worldHeight() * 0.5f) {
+                delta.y -= simulation.worldHeight();
+            } else if (delta.y < -simulation.worldHeight() * 0.5f) {
+                delta.y += simulation.worldHeight();
+            }
+            return SDL_FPoint {
+                head.x + delta.x * worldScale,
+                head.y + delta.y * worldScale
+            };
+        };
         const SDL_FPoint trailEnd {
             head.x - creature.velocity.x * worldScale * 0.05f,
             head.y - creature.velocity.y * worldScale * 0.05f
@@ -409,7 +429,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         }
 
         for (int segmentIndex = kBodySegments - 1; segmentIndex >= 0; --segmentIndex) {
-            const SDL_FPoint point = worldToScreen(creature.bodyPoints[segmentIndex]);
+            const SDL_FPoint point = wrappedPointToScreen(creature.bodyPoints[segmentIndex]);
             const float radius = creature.bodyRadii[segmentIndex] * worldScale;
             const float shade = lerp(0.78f, 1.05f, 1.0f - static_cast<float>(segmentIndex) / static_cast<float>(kBodySegments - 1));
             const SDL_Color segmentColor = tint(body, shade, 240);
@@ -424,8 +444,8 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         const Vec2 finBaseB = creature.bodyPoints[2];
         const Vec2 finTipTop = finBaseA + sideVector * creature.traits.finSpan - forwardVector * creature.traits.segmentSpacing * 0.2f;
         const Vec2 finTipBottom = finBaseA - sideVector * creature.traits.finSpan - forwardVector * creature.traits.segmentSpacing * 0.2f;
-        fillTriangle(renderer_, worldToScreen(finBaseA), worldToScreen(finTipTop), worldToScreen(finBaseB), accent);
-        fillTriangle(renderer_, worldToScreen(finBaseA), worldToScreen(finTipBottom), worldToScreen(finBaseB), accent);
+        fillTriangle(renderer_, wrappedPointToScreen(finBaseA), wrappedPointToScreen(finTipTop), wrappedPointToScreen(finBaseB), accent);
+        fillTriangle(renderer_, wrappedPointToScreen(finBaseA), wrappedPointToScreen(finTipBottom), wrappedPointToScreen(finBaseB), accent);
 
         const Vec2 tailBase = creature.bodyPoints[kBodySegments - 1];
         const Vec2 tailAnchor = creature.bodyPoints[kBodySegments - 2];
@@ -435,35 +455,34 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         const Vec2 tailTip = tailBase - tailDirection * (creature.traits.segmentSpacing * 1.4f);
         fillTriangle(
             renderer_,
-            worldToScreen(tailBase + tailSide * tailSpan),
-            worldToScreen(tailTip),
-            worldToScreen(tailBase - tailSide * tailSpan),
+            wrappedPointToScreen(tailBase + tailSide * tailSpan),
+            wrappedPointToScreen(tailTip),
+            wrappedPointToScreen(tailBase - tailSide * tailSpan),
             accent
         );
 
         const Vec2 jawBase = creature.bodyPoints[0] + forwardVector * (creature.bodyRadii[0] * 0.8f);
         const Vec2 jawTip = jawBase + forwardVector * (creature.traits.biteReach * 0.55f);
         const Vec2 jawSide = sideVector * (creature.bodyRadii[0] * lerp(0.2f, 0.5f, creature.genome.morphology.jawArc));
-        fillTriangle(renderer_, worldToScreen(jawBase + jawSide), worldToScreen(jawTip), worldToScreen(jawBase - jawSide), shell);
+        fillTriangle(renderer_, wrappedPointToScreen(jawBase + jawSide), wrappedPointToScreen(jawTip), wrappedPointToScreen(jawBase - jawSide), shell);
 
-        const SDL_FPoint eyePoint = worldToScreen(creature.bodyPoints[0] + forwardVector * creature.bodyRadii[0] * 0.18f - sideVector * creature.bodyRadii[0] * 0.24f);
+        const SDL_FPoint eyePoint = wrappedPointToScreen(creature.bodyPoints[0] + forwardVector * creature.bodyRadii[0] * 0.18f - sideVector * creature.bodyRadii[0] * 0.24f);
         fillEllipse(renderer_, eyePoint.x, eyePoint.y, 2.8f, 2.8f, eye);
         fillEllipse(renderer_, eyePoint.x + 0.6f, eyePoint.y, 1.0f, 1.0f, {14, 16, 20, 255});
 
         if (creature.genome.morphology.pattern < 0.5f) {
             fillEllipse(renderer_, head.x - creature.bodyRadii[0] * worldScale * 0.16f, head.y + creature.bodyRadii[0] * worldScale * 0.12f, 3.2f, 2.2f, shadow);
-            const SDL_FPoint torso = worldToScreen(creature.bodyPoints[1]);
+            const SDL_FPoint torso = wrappedPointToScreen(creature.bodyPoints[1]);
             fillEllipse(renderer_, torso.x + creature.bodyRadii[1] * worldScale * 0.1f, torso.y - 1.0f, 2.6f, 1.8f, shadow);
         } else {
             for (int segmentIndex = 0; segmentIndex < kBodySegments; ++segmentIndex) {
-                const SDL_FPoint point = worldToScreen(creature.bodyPoints[segmentIndex]);
+                const SDL_FPoint point = wrappedPointToScreen(creature.bodyPoints[segmentIndex]);
                 fillEllipse(renderer_, point.x, point.y - creature.bodyRadii[segmentIndex] * worldScale * 0.24f, creature.bodyRadii[segmentIndex] * worldScale * 0.22f, 1.5f, shadow);
             }
         }
 
         if (selected) {
             const float sensorHalf = creature.traits.sensorSpan * 0.5f;
-            const float sensorLength = creature.traits.sensorRange * worldScale;
             const Vec2 sensorEdgeA {
                 std::cos(creature.angle - sensorHalf),
                 std::sin(creature.angle - sensorHalf)
@@ -472,9 +491,9 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
                 std::cos(creature.angle + sensorHalf),
                 std::sin(creature.angle + sensorHalf)
             };
-            drawLine(renderer_, head, worldToScreen(creature.bodyPoints[0] + sensorEdgeA * creature.traits.sensorRange), {138, 193, 255, 90});
-            drawLine(renderer_, head, worldToScreen(creature.bodyPoints[0] + sensorEdgeB * creature.traits.sensorRange), {138, 193, 255, 90});
-            drawLine(renderer_, head, worldToScreen(creature.bodyPoints[0] + forwardVector * creature.traits.sensorRange), {138, 193, 255, 46});
+            drawLine(renderer_, head, wrappedPointToScreen(creature.bodyPoints[0] + sensorEdgeA * creature.traits.sensorRange), {138, 193, 255, 90});
+            drawLine(renderer_, head, wrappedPointToScreen(creature.bodyPoints[0] + sensorEdgeB * creature.traits.sensorRange), {138, 193, 255, 90});
+            drawLine(renderer_, head, wrappedPointToScreen(creature.bodyPoints[0] + forwardVector * creature.traits.sensorRange), {138, 193, 255, 46});
 
             const Vec2 biteEdgeA {
                 std::cos(creature.angle - creature.traits.biteArc),
@@ -484,8 +503,8 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
                 std::cos(creature.angle + creature.traits.biteArc),
                 std::sin(creature.angle + creature.traits.biteArc)
             };
-            drawLine(renderer_, head, worldToScreen(creature.bodyPoints[0] + biteEdgeA * creature.traits.biteReach), {255, 210, 160, 110});
-            drawLine(renderer_, head, worldToScreen(creature.bodyPoints[0] + biteEdgeB * creature.traits.biteReach), {255, 210, 160, 110});
+            drawLine(renderer_, head, wrappedPointToScreen(creature.bodyPoints[0] + biteEdgeA * creature.traits.biteReach), {255, 210, 160, 110});
+            drawLine(renderer_, head, wrappedPointToScreen(creature.bodyPoints[0] + biteEdgeB * creature.traits.biteReach), {255, 210, 160, 110});
 
             const float ringRadius = creature.traits.collisionRadius * worldScale * 0.7f;
             fillEllipse(renderer_, head.x, head.y, ringRadius, ringRadius, {242, 245, 247, 36});
@@ -495,7 +514,6 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
                 {head.x + forwardVector.x * ringRadius, head.y + forwardVector.y * ringRadius},
                 {243, 244, 246, 180}
             );
-            (void)sensorLength;
         }
     };
 
