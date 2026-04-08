@@ -641,6 +641,8 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "plant " + formatFloat(info.plantAffinity, 2) + "  meat " + formatFloat(info.meatAffinity, 2) + "  aggr " + formatFloat(info.aggression, 2), {219, 226, 233, 255});
         sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "upkeep " + formatFloat(info.upkeep, 1) + "  repro " + formatFloat(info.reproductionThreshold, 1), {179, 194, 210, 255});
+        sy += 18.0f;
+        drawText(smallFont_, selectionCard.x + 12.0f, sy, "slip " + formatFloat(info.bodySlip, 2) + "  curve " + formatFloat(info.bodyCurvature, 2) + "  flow " + formatFloat(info.flowAlignment, 2), {179, 194, 210, 255});
         sy += 28.0f;
 
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "controller outputs", {163, 196, 224, 255});
@@ -686,8 +688,8 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         }
     } else {
         drawText(font_, selectionCard.x + 12.0f, selectionCard.y + 40.0f, "click a creature to inspect it", {184, 192, 201, 255});
-        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 66.0f, "selection shows body physics, controller outputs,", {125, 139, 155, 255});
-        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 84.0f, "and bucketed sensor activity.", {125, 139, 155, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 66.0f, "selection shows body physics, chain stress proxies,", {125, 139, 155, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 84.0f, "controller outputs, and bucketed sensor activity.", {125, 139, 155, 255});
     }
 
     const SDL_FRect controlsCard {panel.x + 14.0f, panel.y + panel.h - 78.0f, panel.w - 28.0f, 78.0f};

@@ -42,11 +42,11 @@ The long-term goal is not a scripted predator/prey toy. The goal is a watchable,
 
 - Single ancestral species at reset.
 - Continuous grazer/scavenger/hunter tradeoffs.
-- Segmented body chains with per-segment radii and tail-wave posing.
+- Articulated segmented body chains with persistent per-segment state, flow-coupled lag, and segment-aware collisions.
 - Morphology-derived thrust, drag, turning, bite reach, sensing, upkeep, and reproduction thresholds.
 - Toroidal world with nutrient field, current field, blooms, and carrion.
 - Recurrent controller with bucketed sensory inputs.
-- Native inspection HUD with history graphs, ecology drift, and selection/controller readouts.
+- Native inspection HUD with history graphs, ecology drift, and selection/controller readouts including slip/curvature-style body metrics.
 
 ## Important Design Rule
 
@@ -62,8 +62,9 @@ If the answer is "only by adding a special-case species rule," that is usually a
 
 These are especially aligned with the current direction:
 
-- Move from head-driven segmented posing toward more genuinely jointed or articulated body dynamics.
-- Make appendages/fins/tails matter more directly to propulsion and maneuvering.
+- Deepen the articulated-body model so appendages/fins/tails contribute more directly to propulsion and maneuvering.
+- Add more physically meaningful environmental structure such as substrate, shelter, shear, or obstacle interaction.
+- Add lineage and clade observability so long-term evolutionary structure is easier to inspect.
 - Introduce richer environmental physics instead of lots of ecology-specific hand tuning.
 - Continue improving the right-side HUD and inspection tooling, borrowing the best ideas from the old sim.
 - Add camera controls, save/load, and deeper debug views once the core dynamics justify them.

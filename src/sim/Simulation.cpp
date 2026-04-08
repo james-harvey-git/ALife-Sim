@@ -56,6 +56,10 @@ float dot(const Vec2& lhs, const Vec2& rhs) {
     return lhs.x * rhs.x + lhs.y * rhs.y;
 }
 
+float cross(const Vec2& lhs, const Vec2& rhs) {
+    return lhs.x * rhs.y - lhs.y * rhs.x;
+}
+
 float lengthSquared(const Vec2& value) {
     return dot(value, value);
 }
@@ -120,7 +124,7 @@ float localNoise(float x, float y, float timeSeconds) {
     const float bandA = std::sin(x * 0.0041f + timeSeconds * 0.19f);
     const float bandB = std::cos(y * 0.0034f - timeSeconds * 0.13f);
     const float swirl = std::sin((x + y) * 0.0026f + timeSeconds * 0.07f);
-    return 0.5f + 0.25f * bandA + 0.2f * bandB + 0.15f * swirl;
+    return 0.58f + 0.16f * bandA + 0.13f * bandB + 0.09f * swirl;
 }
 
 float sampleNutrientField(float x, float y, float timeSeconds) {
@@ -524,28 +528,165 @@ void forwardBrain(const Genome& genome, Creature& creature, const std::array<flo
     }
 }
 
-void rebuildBodyPose(Creature& creature, float worldWidth, float worldHeight) {
+float segmentSpacingFor(const Creature& creature, int segmentIndex) {
+    const float t = static_cast<float>(segmentIndex) / static_cast<float>(kBodySegments - 1);
+    return creature.traits.segmentSpacing * lerp(0.92f, 1.18f, t);
+}
+
+void computeBodyObservables(Creature& creature, float worldWidth, float worldHeight, float timeSeconds) {
+    float curvature = 0.0f;
+    int curvatureCount = 0;
+    for (int segmentIndex = 1; segmentIndex < kBodySegments - 1; ++segmentIndex) {
+        const Vec2 front = normalize(shortestWrappedDelta(
+            creature.bodyPoints[segmentIndex],
+            creature.bodyPoints[segmentIndex - 1],
+            worldWidth,
+            worldHeight
+        ));
+        const Vec2 back = normalize(shortestWrappedDelta(
+            creature.bodyPoints[segmentIndex],
+            creature.bodyPoints[segmentIndex + 1],
+            worldWidth,
+            worldHeight
+        ));
+        curvature += std::abs(wrapAngle(std::atan2(front.y, front.x) - std::atan2(back.y, back.x)));
+        ++curvatureCount;
+    }
+    creature.bodyCurvature = curvatureCount > 0 ? curvature / static_cast<float>(curvatureCount) : 0.0f;
+
+    const Vec2 tailToHead = normalize(shortestWrappedDelta(
+        creature.bodyPoints[kBodySegments - 1],
+        creature.bodyPoints[0],
+        worldWidth,
+        worldHeight
+    ));
+    const Vec2 facing {std::cos(creature.angle), std::sin(creature.angle)};
+    creature.bodySlip = 1.0f - std::max(0.0f, dot(tailToHead, facing));
+
+    Vec2 meanCurrent {};
+    for (int segmentIndex = 0; segmentIndex < kBodySegments; ++segmentIndex) {
+        meanCurrent = meanCurrent + sampleCurrentField(
+            creature.bodyPoints[segmentIndex].x,
+            creature.bodyPoints[segmentIndex].y,
+            timeSeconds
+        );
+    }
+    meanCurrent = meanCurrent / static_cast<float>(kBodySegments);
+    if (lengthSquared(meanCurrent) < 1e-5f) {
+        creature.flowAlignment = 0.5f;
+    } else {
+        creature.flowAlignment = 0.5f + 0.5f * dot(normalize(meanCurrent), facing);
+    }
+}
+
+void seedBodyPose(Creature& creature, float worldWidth, float worldHeight) {
     creature.bodyPoints[0] = creature.position;
 
     const float headRadius = creature.traits.minorRadius * lerp(0.86f, 1.12f, creature.genome.morphology.jawLength);
     creature.bodyRadii[0] = headRadius;
+    creature.bodyVelocities[0] = creature.velocity;
 
     for (int segmentIndex = 1; segmentIndex < kBodySegments; ++segmentIndex) {
         const float t = static_cast<float>(segmentIndex) / static_cast<float>(kBodySegments - 1);
         const float sway = std::sin(creature.gaitPhase - t * 1.3f) * creature.traits.tailWaveAmplitude * t;
         const Vec2 direction {std::cos(creature.angle + sway), std::sin(creature.angle + sway)};
-        const float spacing = creature.traits.segmentSpacing * lerp(0.92f, 1.18f, t);
+        const float spacing = segmentSpacingFor(creature, segmentIndex);
         creature.bodyPoints[segmentIndex] = wrapPosition(
             creature.bodyPoints[segmentIndex - 1] - direction * spacing,
             worldWidth,
             worldHeight
         );
+        creature.bodyVelocities[segmentIndex] = creature.velocity;
         creature.bodyRadii[segmentIndex] = lerp(
             creature.traits.minorRadius * 0.95f,
             creature.traits.minorRadius * 0.26f,
             t
         );
     }
+    computeBodyObservables(creature, worldWidth, worldHeight, 0.0f);
+}
+
+void translateBody(Creature& creature, const Vec2& delta, float worldWidth, float worldHeight) {
+    for (int segmentIndex = 0; segmentIndex < kBodySegments; ++segmentIndex) {
+        creature.bodyPoints[segmentIndex] = wrapPosition(creature.bodyPoints[segmentIndex] + delta, worldWidth, worldHeight);
+    }
+}
+
+void integrateBodyChain(Creature& creature, float dt, float worldWidth, float worldHeight, float timeSeconds) {
+    const auto previousPoints = creature.bodyPoints;
+    const auto previousVelocities = creature.bodyVelocities;
+    const Vec2 headCurrent = sampleCurrentField(creature.position.x, creature.position.y, timeSeconds);
+    const Vec2 facing {std::cos(creature.angle), std::sin(creature.angle)};
+    const Vec2 side {-facing.y, facing.x};
+
+    creature.bodyPoints[0] = creature.position;
+    creature.bodyVelocities[0] = creature.velocity;
+
+    for (int segmentIndex = 1; segmentIndex < kBodySegments; ++segmentIndex) {
+        const float t = static_cast<float>(segmentIndex) / static_cast<float>(kBodySegments - 1);
+        const float spacing = segmentSpacingFor(creature, segmentIndex);
+        const float sway = std::sin(creature.gaitPhase - t * 1.45f) * creature.traits.tailWaveAmplitude * lerp(0.2f, 1.0f, t);
+        const Vec2 desiredDir = normalize(facing - side * sway);
+        const Vec2 desiredPoint = creature.bodyPoints[segmentIndex - 1] - desiredDir * spacing;
+        const Vec2 currentAtSegment = sampleCurrentField(
+            previousPoints[segmentIndex].x,
+            previousPoints[segmentIndex].y,
+            timeSeconds
+        );
+        const Vec2 deltaToTarget = shortestWrappedDelta(previousPoints[segmentIndex], desiredPoint, worldWidth, worldHeight);
+        const Vec2 spring = deltaToTarget * (7.5f + creature.genome.morphology.tailFlex * 8.0f);
+        const Vec2 flowDrag = (currentAtSegment - previousVelocities[segmentIndex]) * (1.2f + t * 0.9f);
+        const Vec2 tailDrive = desiredDir * (std::sin(creature.gaitPhase - t * 1.2f) * creature.traits.forwardThrust * 0.015f * t);
+
+        creature.bodyVelocities[segmentIndex] = previousVelocities[segmentIndex] + (spring + flowDrag + tailDrive) * dt;
+        creature.bodyVelocities[segmentIndex] = creature.bodyVelocities[segmentIndex] * std::exp(-(2.2f + t * 1.1f) * dt);
+        creature.bodyPoints[segmentIndex] = wrapPosition(
+            previousPoints[segmentIndex] + creature.bodyVelocities[segmentIndex] * dt,
+            worldWidth,
+            worldHeight
+        );
+    }
+
+    for (int iteration = 0; iteration < 2; ++iteration) {
+        creature.bodyPoints[0] = creature.position;
+        for (int segmentIndex = 1; segmentIndex < kBodySegments; ++segmentIndex) {
+            const float spacing = segmentSpacingFor(creature, segmentIndex);
+            Vec2 delta = shortestWrappedDelta(
+                creature.bodyPoints[segmentIndex - 1],
+                creature.bodyPoints[segmentIndex],
+                worldWidth,
+                worldHeight
+            );
+            float distance = length(delta);
+            if (distance < 1e-4f) {
+                delta = facing * -spacing;
+                distance = spacing;
+            }
+            creature.bodyPoints[segmentIndex] = wrapPosition(
+                creature.bodyPoints[segmentIndex - 1] + delta * (spacing / distance),
+                worldWidth,
+                worldHeight
+            );
+        }
+    }
+
+    for (int segmentIndex = 1; segmentIndex < kBodySegments; ++segmentIndex) {
+        const Vec2 displacement = shortestWrappedDelta(
+            previousPoints[segmentIndex],
+            creature.bodyPoints[segmentIndex],
+            worldWidth,
+            worldHeight
+        );
+        creature.bodyVelocities[segmentIndex] = displacement / std::max(dt, 1e-4f);
+    }
+
+    const Vec2 tailCurrent = sampleCurrentField(
+        creature.bodyPoints[kBodySegments - 1].x,
+        creature.bodyPoints[kBodySegments - 1].y,
+        timeSeconds
+    );
+    creature.angularVelocity += cross(facing, tailCurrent - headCurrent) * creature.traits.segmentSpacing * 0.00045f;
+    computeBodyObservables(creature, worldWidth, worldHeight, timeSeconds);
 }
 
 Vec2 mouthPosition(const Creature& creature) {
@@ -578,7 +719,7 @@ Creature makeCreature(
     creature.age = randomFloat(rng, 0.0f, 20.0f);
     creature.signal = 0.0f;
     creature.gaitPhase = randomFloat(rng, 0.0f, kTau);
-    rebuildBodyPose(creature, worldWidth, worldHeight);
+    seedBodyPose(creature, worldWidth, worldHeight);
     return creature;
 }
 
@@ -756,6 +897,9 @@ SelectionInfo Simulation::selectionInfo() const {
     info.tailWaveAmplitude = it->traits.tailWaveAmplitude;
     info.upkeep = it->traits.upkeep;
     info.reproductionThreshold = it->traits.reproductionThreshold;
+    info.bodyCurvature = it->bodyCurvature;
+    info.bodySlip = it->bodySlip;
+    info.flowAlignment = it->flowAlignment;
     info.outputs = it->outputs;
     info.memory = it->memory;
 
@@ -943,8 +1087,11 @@ void Simulation::step(float dt) {
         creature.age += dt;
         creature.cooldown = std::max(0.0f, creature.cooldown - dt);
 
+        integrateBodyChain(creature, dt, worldWidth_, worldHeight_, timeSeconds_);
+
         const float movementCost = creature.traits.upkeep * dt
-            * (0.65f + std::abs(thrustInput) * 0.55f + std::abs(turnInput) * 0.25f + creature.signal * 0.3f);
+            * (0.65f + std::abs(thrustInput) * 0.55f + std::abs(turnInput) * 0.25f + creature.signal * 0.3f
+                + creature.bodySlip * 0.08f + creature.bodyCurvature * 0.025f);
         creature.energy -= movementCost;
 
         if (creature.energy > creature.traits.reproductionThreshold * 0.62f) {
@@ -954,8 +1101,6 @@ void Simulation::step(float dt) {
             creature.health += creature.energy;
             creature.energy = 0.0f;
         }
-
-        rebuildBodyPose(creature, worldWidth_, worldHeight_);
     }
 
     hash.clear();
@@ -1029,8 +1174,12 @@ void Simulation::step(float dt) {
 
     for (std::size_t index = 0; index < creatures_.size(); ++index) {
         creatures_[index].position = wrapPosition(creatures_[index].position + collisionPositionDelta[index], worldWidth_, worldHeight_);
+        translateBody(creatures_[index], collisionPositionDelta[index], worldWidth_, worldHeight_);
         creatures_[index].velocity = creatures_[index].velocity + collisionVelocityDelta[index];
-        rebuildBodyPose(creatures_[index], worldWidth_, worldHeight_);
+        for (Vec2& velocity : creatures_[index].bodyVelocities) {
+            velocity = velocity + collisionVelocityDelta[index];
+        }
+        computeBodyObservables(creatures_[index], worldWidth_, worldHeight_, timeSeconds_);
     }
 
     std::vector<Creature> pendingSpawns;
@@ -1057,7 +1206,7 @@ void Simulation::step(float dt) {
         if (grazeDrive > 0.18f) {
             const float ambientNutrient = sampleNutrient(creature.position.x, creature.position.y);
             creature.energy += ambientNutrient * grazeDrive * dt
-                * (1.6f + creature.genome.ecology.plantAffinity * 2.6f);
+                * (1.4f + creature.genome.ecology.plantAffinity * 2.35f);
 
             Bloom* bestBloom = nullptr;
             float bestDistSq = std::numeric_limits<float>::max();
@@ -1082,7 +1231,7 @@ void Simulation::step(float dt) {
                     creature.traits.grazeRate * grazeDrive * dt
                 );
                 bestBloom->energy -= harvest;
-                creature.energy += harvest * (0.95f + creature.genome.ecology.plantAffinity * 1.35f);
+                creature.energy += harvest * (0.9f + creature.genome.ecology.plantAffinity * 1.22f);
             }
         }
 

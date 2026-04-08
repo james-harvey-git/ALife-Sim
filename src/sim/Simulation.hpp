@@ -116,11 +116,15 @@ struct Creature {
     float signal = 0.0f;
     float cooldown = 0.0f;
     float gaitPhase = 0.0f;
+    float bodyCurvature = 0.0f;
+    float bodySlip = 0.0f;
+    float flowAlignment = 0.0f;
     bool alive = true;
     std::array<float, kMemorySize> memory {};
     std::array<float, kOutputCount> outputs {};
     std::array<float, kInputCount> lastInputs {};
     std::array<Vec2, kBodySegments> bodyPoints {};
+    std::array<Vec2, kBodySegments> bodyVelocities {};
     std::array<float, kBodySegments> bodyRadii {};
 };
 
@@ -190,6 +194,9 @@ struct SelectionInfo {
     float tailWaveAmplitude = 0.0f;
     float upkeep = 0.0f;
     float reproductionThreshold = 0.0f;
+    float bodyCurvature = 0.0f;
+    float bodySlip = 0.0f;
+    float flowAlignment = 0.0f;
     std::array<float, kOutputCount> outputs {};
     std::array<float, kMemorySize> memory {};
     std::array<float, kSensorBuckets> plantSense {};

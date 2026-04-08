@@ -10,6 +10,7 @@ This repository is a fresh start from the older predator/prey project. Instead o
 - Physics-first phenotype model where geometry drives movement and interaction
 - Continuous grazing, scavenging, and hunting tradeoffs instead of discrete diets
 - Segmented procedural sprite rendering tied directly to evolved body traits
+- Articulated body chains that lag, bend, and couple to local flow
 - Native SDL2 runtime so we can push simulation complexity without browser overhead
 
 ## Physics-First Design
@@ -34,12 +35,12 @@ The first playable milestone in this repo includes:
 - toroidal water world with nutrient-driven bloom patches
 - current field that nudges body motion
 - evolving recurrent controllers
-- segmented phenotypes with curved body chains and body-part collision envelopes
+- segmented phenotypes with articulated body chains, flow-coupled lag, and body-part collision envelopes
 - grazing, carrion feeding, and live predation
 - reproduction with mutation from a single ancestor genome
 - native HUD with history graphs, ecology drift readouts, and controller inspection
 
-This is intentionally the foundation, not the end state. The long-term plan is to grow from phenotype-driven rigid bodies toward richer articulated morphologies and stronger environmental physics.
+This is intentionally still an early foundation. The long-term plan is to grow from these articulated soft-body approximations toward richer jointed morphologies, stronger environmental physics, and deeper lineage/ecology observability.
 
 ## Controls
 
