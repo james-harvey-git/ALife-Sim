@@ -286,6 +286,59 @@ struct EnvironmentProbe {
     float shear = 0.0f;
 };
 
+struct CreatureSnapshot {
+    bool valid = false;
+    std::uint64_t id = 0;
+    std::uint32_t lineageId = 0;
+    DietClass dietClass = DietClass::Omnivore;
+    Vec2 position {};
+    float energy = 0.0f;
+    float health = 0.0f;
+    float age = 0.0f;
+    float mass = 0.0f;
+    float majorRadius = 0.0f;
+    float minorRadius = 0.0f;
+    float sensorRange = 0.0f;
+    float brainComplexity = 0.0f;
+    float plantAffinity = 0.0f;
+    float meatAffinity = 0.0f;
+    float aggression = 0.0f;
+    float substrateProximity = 0.0f;
+    float substrateShelter = 0.0f;
+    float localShear = 0.0f;
+};
+
+struct LineageSnapshot {
+    std::uint32_t id = 0;
+    std::uint32_t parentId = 0;
+    std::uint8_t depth = 0;
+    float age = 0.0f;
+    float noveltyAtBranch = 0.0f;
+    std::size_t population = 0;
+    std::size_t peakPopulation = 0;
+    float avgBrainComplexity = 0.0f;
+};
+
+struct WorldSnapshot {
+    std::uint64_t seed = 0;
+    float timeSeconds = 0.0f;
+    float worldWidth = 0.0f;
+    float worldHeight = 0.0f;
+    std::size_t population = 0;
+    std::size_t blooms = 0;
+    std::size_t carrion = 0;
+    std::size_t reefs = 0;
+    std::uint64_t births = 0;
+    std::uint64_t deaths = 0;
+    std::uint64_t extinctions = 0;
+    float season = 0.0f;
+    int activeLineages = 0;
+    float dominantLineageShare = 0.0f;
+    CreatureSnapshot selectedCreature {};
+    CreatureSnapshot topEnergyCreature {};
+    std::vector<LineageSnapshot> topLineages {};
+};
+
 struct InnovationRecord {
     std::uint32_t fromNodeId = 0;
     std::uint32_t toNodeId = 0;
@@ -336,6 +389,10 @@ public:
     float sampleNutrient(float x, float y) const;
     Vec2 sampleCurrent(float x, float y) const;
     EnvironmentProbe probeEnvironment(float x, float y) const;
+    CreatureSnapshot selectedCreatureSnapshot() const;
+    CreatureSnapshot topEnergyCreatureSnapshot() const;
+    std::vector<LineageSnapshot> topLineageSnapshots(std::size_t maxCount = 5) const;
+    WorldSnapshot worldSnapshot(std::size_t topLineageCount = 5) const;
 
 private:
     float worldWidth_ = 2400.0f;
@@ -365,6 +422,7 @@ private:
     std::vector<LineageRecord> lineages_ {};
 
     bool selectRepresentativeInLineage(std::uint32_t lineageId);
+    CreatureSnapshot makeCreatureSnapshot(const Creature& creature) const;
 };
 
 std::string toString(DietClass dietClass);

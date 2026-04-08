@@ -115,9 +115,13 @@ Run headless smoke tests:
 ./build/alife_sim --smoke-test --seed 2 --smoke-steps 10800
 ./build/alife_sim --batch-run --seed 1 --batch-count 5 --smoke-steps 10800
 ./build/alife_sim --batch-run --seed 1 --batch-count 5 --smoke-steps 10800 --report-format jsonl
+./build/alife_sim --benchmark --benchmark-preset quick
+./build/alife_sim --benchmark --benchmark-preset ecology
+./build/alife_sim --benchmark --benchmark-preset quick --report-format jsonl --snapshot
 ```
 
 Use multiple seeds when changing simulation dynamics.
+Prefer the named benchmark presets for regression comparisons, and use `--snapshot` when a run needs richer world/lineage/focal-creature context.
 
 ## Working Style
 

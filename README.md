@@ -107,6 +107,26 @@ Emit machine-readable JSONL summaries for offline analysis:
 ./build/alife_sim --batch-run --seed 1 --batch-count 5 --smoke-steps 10800 --report-format jsonl
 ```
 
+Run a named benchmark preset:
+
+```bash
+./build/alife_sim --benchmark --benchmark-preset quick
+./build/alife_sim --benchmark --benchmark-preset ecology
+```
+
+Capture richer world snapshots in headless output:
+
+```bash
+./build/alife_sim --smoke-test --seed 1 --smoke-steps 3600 --snapshot
+./build/alife_sim --benchmark --benchmark-preset quick --report-format jsonl --snapshot
+```
+
+Current benchmark presets:
+
+- `quick`: short multi-seed regression probe
+- `ecology`: medium multi-seed ecology baseline
+- `stress`: longer heavier benchmark for performance and stability work
+
 ## Repo Layout
 
 - `src/sim`: simulation state, genomes, physics, and ecology

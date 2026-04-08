@@ -1887,6 +1887,107 @@ EnvironmentProbe Simulation::probeEnvironment(float x, float y) const {
     };
 }
 
+CreatureSnapshot Simulation::makeCreatureSnapshot(const Creature& creature) const {
+    return CreatureSnapshot {
+        .valid = true,
+        .id = creature.id,
+        .lineageId = creature.lineageId,
+        .dietClass = classifyDiet(creature.genome),
+        .position = creature.position,
+        .energy = creature.energy,
+        .health = creature.health,
+        .age = creature.age,
+        .mass = creature.traits.mass,
+        .majorRadius = creature.traits.majorRadius,
+        .minorRadius = creature.traits.minorRadius,
+        .sensorRange = creature.traits.sensorRange,
+        .brainComplexity = brainComplexityScore(creature.genome.brain),
+        .plantAffinity = creature.genome.ecology.plantAffinity,
+        .meatAffinity = creature.genome.ecology.meatAffinity,
+        .aggression = creature.genome.ecology.aggression,
+        .substrateProximity = creature.substrateProximity,
+        .substrateShelter = creature.substrateShelter,
+        .localShear = creature.localShear
+    };
+}
+
+CreatureSnapshot Simulation::selectedCreatureSnapshot() const {
+    if (selectedCreatureId_ == 0) {
+        return {};
+    }
+
+    const auto it = std::find_if(creatures_.begin(), creatures_.end(), [&](const Creature& creature) {
+        return creature.id == selectedCreatureId_ && creature.alive;
+    });
+    if (it == creatures_.end()) {
+        return {};
+    }
+    return makeCreatureSnapshot(*it);
+}
+
+CreatureSnapshot Simulation::topEnergyCreatureSnapshot() const {
+    const auto it = std::max_element(creatures_.begin(), creatures_.end(), [](const Creature& lhs, const Creature& rhs) {
+        return lhs.energy < rhs.energy;
+    });
+    if (it == creatures_.end()) {
+        return {};
+    }
+    return makeCreatureSnapshot(*it);
+}
+
+std::vector<LineageSnapshot> Simulation::topLineageSnapshots(std::size_t maxCount) const {
+    std::vector<LineageSnapshot> snapshots;
+    snapshots.reserve(lineages_.size());
+    for (const LineageRecord& lineage : lineages_) {
+        if (lineage.currentPopulation == 0) {
+            continue;
+        }
+        snapshots.push_back(LineageSnapshot {
+            .id = lineage.id,
+            .parentId = lineage.parentId,
+            .depth = lineage.depth,
+            .age = timeSeconds_ - lineage.founderTime,
+            .noveltyAtBranch = lineage.noveltyAtBranch,
+            .population = lineage.currentPopulation,
+            .peakPopulation = lineage.peakPopulation,
+            .avgBrainComplexity = lineage.avgBrainComplexity
+        });
+    }
+
+    std::sort(snapshots.begin(), snapshots.end(), [](const LineageSnapshot& lhs, const LineageSnapshot& rhs) {
+        if (lhs.population != rhs.population) {
+            return lhs.population > rhs.population;
+        }
+        return lhs.avgBrainComplexity > rhs.avgBrainComplexity;
+    });
+    if (snapshots.size() > maxCount) {
+        snapshots.resize(maxCount);
+    }
+    return snapshots;
+}
+
+WorldSnapshot Simulation::worldSnapshot(std::size_t topLineageCount) const {
+    return WorldSnapshot {
+        .seed = seed_,
+        .timeSeconds = timeSeconds_,
+        .worldWidth = worldWidth_,
+        .worldHeight = worldHeight_,
+        .population = stats_.population,
+        .blooms = stats_.blooms,
+        .carrion = stats_.carrion,
+        .reefs = stats_.reefs,
+        .births = stats_.births,
+        .deaths = stats_.deaths,
+        .extinctions = stats_.extinctions,
+        .season = stats_.season,
+        .activeLineages = stats_.activeLineages,
+        .dominantLineageShare = stats_.dominantLineageShare,
+        .selectedCreature = selectedCreatureSnapshot(),
+        .topEnergyCreature = topEnergyCreatureSnapshot(),
+        .topLineages = topLineageSnapshots(topLineageCount)
+    };
+}
+
 std::optional<std::uint64_t> Simulation::creatureAt(float worldX, float worldY, float radius) const {
     std::optional<std::uint64_t> bestId;
     float bestDistanceSq = radius * radius;

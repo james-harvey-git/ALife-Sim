@@ -19,15 +19,80 @@ enum class ReportFormat {
     JsonLines
 };
 
+enum class BenchmarkPreset {
+    None,
+    Quick,
+    Ecology,
+    Stress
+};
+
+struct BenchmarkScenario {
+    const char* name = "custom";
+    int smokeSteps = 3600;
+    int batchCount = 1;
+    int seedStride = 1;
+};
+
 struct CliOptions {
     bool smokeTest = false;
     bool batchRun = false;
+    bool benchmarkRun = false;
+    bool snapshotOutput = false;
     std::uint64_t seed = 1;
     int smokeSteps = 3600;
     int batchCount = 8;
     int seedStride = 1;
     ReportFormat reportFormat = ReportFormat::Text;
+    BenchmarkPreset benchmarkPreset = BenchmarkPreset::None;
+    int snapshotLineageCount = 5;
 };
+
+BenchmarkPreset parseBenchmarkPreset(const std::string& value) {
+    if (value == "quick") {
+        return BenchmarkPreset::Quick;
+    }
+    if (value == "stress") {
+        return BenchmarkPreset::Stress;
+    }
+    if (value == "ecology") {
+        return BenchmarkPreset::Ecology;
+    }
+    return BenchmarkPreset::None;
+}
+
+BenchmarkScenario benchmarkScenarioForPreset(BenchmarkPreset preset) {
+    switch (preset) {
+        case BenchmarkPreset::Quick:
+            return BenchmarkScenario {.name = "quick", .smokeSteps = 3600, .batchCount = 3, .seedStride = 1};
+        case BenchmarkPreset::Stress:
+            return BenchmarkScenario {.name = "stress", .smokeSteps = 21600, .batchCount = 8, .seedStride = 1};
+        case BenchmarkPreset::Ecology:
+            return BenchmarkScenario {.name = "ecology", .smokeSteps = 10800, .batchCount = 5, .seedStride = 1};
+        default:
+            return BenchmarkScenario {};
+    }
+}
+
+void applyBenchmarkPreset(CliOptions& options) {
+    if (!options.benchmarkRun) {
+        return;
+    }
+    if (options.benchmarkPreset == BenchmarkPreset::None) {
+        options.benchmarkPreset = BenchmarkPreset::Ecology;
+    }
+    const BenchmarkScenario scenario = benchmarkScenarioForPreset(options.benchmarkPreset);
+    options.batchRun = true;
+    options.smokeSteps = scenario.smokeSteps;
+    options.batchCount = scenario.batchCount;
+    options.seedStride = scenario.seedStride;
+}
+
+std::string scenarioLabelForOptions(const CliOptions& options) {
+    if (!options.benchmarkRun) {
+        return "custom";
+    }
+    return benchmarkScenarioForPreset(options.benchmarkPreset).name;
+}
 
 CliOptions parseArgs(int argc, char** argv) {
     CliOptions options {};
@@ -38,6 +103,8 @@ CliOptions parseArgs(int argc, char** argv) {
             options.smokeTest = true;
         } else if (argument == "--batch-run") {
             options.batchRun = true;
+        } else if (argument == "--benchmark") {
+            options.benchmarkRun = true;
         } else if (argument == "--seed" && index + 1 < argc) {
             options.seed = static_cast<std::uint64_t>(std::strtoull(argv[++index], nullptr, 10));
         } else if (argument == "--smoke-steps" && index + 1 < argc) {
@@ -46,6 +113,13 @@ CliOptions parseArgs(int argc, char** argv) {
             options.batchCount = std::max(1, std::atoi(argv[++index]));
         } else if (argument == "--seed-stride" && index + 1 < argc) {
             options.seedStride = std::max(1, std::atoi(argv[++index]));
+        } else if (argument == "--snapshot") {
+            options.snapshotOutput = true;
+        } else if (argument == "--snapshot-lineages" && index + 1 < argc) {
+            options.snapshotLineageCount = std::max(1, std::atoi(argv[++index]));
+        } else if (argument == "--benchmark-preset" && index + 1 < argc) {
+            options.benchmarkRun = true;
+            options.benchmarkPreset = parseBenchmarkPreset(argv[++index]);
         } else if (argument == "--report-format" && index + 1 < argc) {
             const std::string value = argv[++index];
             if (value == "jsonl") {
@@ -56,12 +130,16 @@ CliOptions parseArgs(int argc, char** argv) {
         }
     }
 
+    applyBenchmarkPreset(options);
     return options;
 }
 
 struct RunSummary {
     std::uint64_t seed = 0;
     int steps = 0;
+    double wallSeconds = 0.0;
+    double stepsPerSecond = 0.0;
+    double simulatedSeconds = 0.0;
     std::size_t population = 0;
     std::size_t blooms = 0;
     std::size_t carrion = 0;
@@ -84,21 +162,43 @@ struct RunSummary {
     float feedPredation = 0.0f;
     float spendUpkeep = 0.0f;
     float spendReproduction = 0.0f;
+    bool hasSnapshot = false;
+    alife::WorldSnapshot snapshot {};
 };
 
-RunSummary runSummaryForSeed(std::uint64_t seed, int steps) {
+struct BatchSummary {
+    int extinctRuns = 0;
+    double totalWallSeconds = 0.0;
+    double meanStepsPerSecond = 0.0;
+    float meanPopulation = 0.0f;
+    float minPopulation = 0.0f;
+    float maxPopulation = 0.0f;
+    float meanLineages = 0.0f;
+    float meanDominantLineageShare = 0.0f;
+    float meanAverageEnergy = 0.0f;
+    float meanAverageShelter = 0.0f;
+};
+
+RunSummary runSummaryForSeed(std::uint64_t seed, int steps, bool captureSnapshot, int snapshotLineageCount) {
     constexpr float kStep = 1.0f / 60.0f;
 
     alife::Simulation simulation;
     simulation.reset(seed);
+    const auto wallStart = std::chrono::steady_clock::now();
     for (int index = 0; index < steps; ++index) {
         simulation.step(kStep);
     }
+    const auto wallEnd = std::chrono::steady_clock::now();
 
     const alife::Stats& stats = simulation.stats();
     RunSummary summary {};
     summary.seed = seed;
     summary.steps = steps;
+    summary.wallSeconds = std::chrono::duration<double>(wallEnd - wallStart).count();
+    summary.stepsPerSecond = summary.wallSeconds > 1e-9
+        ? static_cast<double>(steps) / summary.wallSeconds
+        : 0.0;
+    summary.simulatedSeconds = static_cast<double>(steps) * kStep;
     summary.population = stats.population;
     summary.blooms = stats.blooms;
     summary.carrion = stats.carrion;
@@ -130,10 +230,183 @@ RunSummary runSummaryForSeed(std::uint64_t seed, int steps) {
         summary.averageReproductionThreshold /= divisor;
     }
 
+    if (captureSnapshot) {
+        summary.hasSnapshot = true;
+        summary.snapshot = simulation.worldSnapshot(static_cast<std::size_t>(snapshotLineageCount));
+    }
+
     return summary;
 }
 
-void printSmokeSummary(const RunSummary& summary) {
+BatchSummary summarizeBatchRuns(const std::vector<RunSummary>& runs) {
+    BatchSummary summary {};
+    if (runs.empty()) {
+        return summary;
+    }
+
+    float minPopulation = std::numeric_limits<float>::max();
+    float maxPopulation = 0.0f;
+    float totalPopulation = 0.0f;
+    float totalLineages = 0.0f;
+    float totalDominantLineageShare = 0.0f;
+    float totalAverageEnergy = 0.0f;
+    float totalAverageShelter = 0.0f;
+    double totalWallSeconds = 0.0;
+    double totalSteps = 0.0;
+
+    for (const RunSummary& run : runs) {
+        const float population = static_cast<float>(run.population);
+        minPopulation = std::min(minPopulation, population);
+        maxPopulation = std::max(maxPopulation, population);
+        totalPopulation += population;
+        totalLineages += static_cast<float>(run.activeLineages);
+        totalDominantLineageShare += run.dominantLineageShare;
+        totalAverageEnergy += run.averageEnergy;
+        totalAverageShelter += run.avgShelter;
+        totalWallSeconds += run.wallSeconds;
+        totalSteps += static_cast<double>(run.steps);
+        if (run.extinctions > 0 || run.population == 0) {
+            ++summary.extinctRuns;
+        }
+    }
+
+    const float runCount = static_cast<float>(runs.size());
+    summary.totalWallSeconds = totalWallSeconds;
+    summary.meanStepsPerSecond = totalWallSeconds > 1e-9 ? totalSteps / totalWallSeconds : 0.0;
+    summary.meanPopulation = totalPopulation / runCount;
+    summary.minPopulation = minPopulation;
+    summary.maxPopulation = maxPopulation;
+    summary.meanLineages = totalLineages / runCount;
+    summary.meanDominantLineageShare = totalDominantLineageShare / runCount;
+    summary.meanAverageEnergy = totalAverageEnergy / runCount;
+    summary.meanAverageShelter = totalAverageShelter / runCount;
+    return summary;
+}
+
+void printTextCreatureSnapshot(const char* label, const alife::CreatureSnapshot& snapshot) {
+    if (!snapshot.valid) {
+        std::cout << "  " << label << "=none\n";
+        return;
+    }
+
+    std::cout
+        << "  " << label
+        << " id=" << snapshot.id
+        << " lineage=" << snapshot.lineageId
+        << " role=" << alife::toString(snapshot.dietClass)
+        << " energy=" << snapshot.energy
+        << " health=" << snapshot.health
+        << " age=" << snapshot.age
+        << " mass=" << snapshot.mass
+        << " body=" << snapshot.majorRadius << "x" << snapshot.minorRadius
+        << " shelter=" << snapshot.substrateShelter
+        << " shear=" << snapshot.localShear
+        << '\n';
+}
+
+void printTextWorldSnapshot(const alife::WorldSnapshot& snapshot) {
+    std::cout
+        << "  snapshot seed=" << snapshot.seed
+        << " time=" << snapshot.timeSeconds
+        << " world=" << snapshot.worldWidth << "x" << snapshot.worldHeight
+        << " pop=" << snapshot.population
+        << " blooms=" << snapshot.blooms
+        << " carrion=" << snapshot.carrion
+        << " reefs=" << snapshot.reefs
+        << " lineages=" << snapshot.activeLineages
+        << '\n';
+    printTextCreatureSnapshot("selected", snapshot.selectedCreature);
+    printTextCreatureSnapshot("top_energy", snapshot.topEnergyCreature);
+    if (!snapshot.topLineages.empty()) {
+        std::cout << "  top_lineages";
+        for (const auto& lineage : snapshot.topLineages) {
+            std::cout
+                << " L" << lineage.id
+                << "(pop=" << lineage.population
+                << ",depth=" << static_cast<int>(lineage.depth)
+                << ",brain=" << lineage.avgBrainComplexity
+                << ")";
+        }
+        std::cout << '\n';
+    }
+}
+
+void printJsonCreatureSnapshot(const alife::CreatureSnapshot& snapshot) {
+    if (!snapshot.valid) {
+        std::cout << "null";
+        return;
+    }
+
+    std::cout
+        << "{\"id\":" << snapshot.id
+        << ",\"lineage\":" << snapshot.lineageId
+        << ",\"diet\":\"" << alife::toString(snapshot.dietClass) << "\""
+        << ",\"x\":" << snapshot.position.x
+        << ",\"y\":" << snapshot.position.y
+        << ",\"energy\":" << snapshot.energy
+        << ",\"health\":" << snapshot.health
+        << ",\"age\":" << snapshot.age
+        << ",\"mass\":" << snapshot.mass
+        << ",\"major_radius\":" << snapshot.majorRadius
+        << ",\"minor_radius\":" << snapshot.minorRadius
+        << ",\"sensor_range\":" << snapshot.sensorRange
+        << ",\"brain_complexity\":" << snapshot.brainComplexity
+        << ",\"plant_affinity\":" << snapshot.plantAffinity
+        << ",\"meat_affinity\":" << snapshot.meatAffinity
+        << ",\"aggression\":" << snapshot.aggression
+        << ",\"substrate_proximity\":" << snapshot.substrateProximity
+        << ",\"substrate_shelter\":" << snapshot.substrateShelter
+        << ",\"local_shear\":" << snapshot.localShear
+        << "}";
+}
+
+void printJsonLineageSnapshots(const std::vector<alife::LineageSnapshot>& snapshots) {
+    std::cout << "[";
+    for (std::size_t index = 0; index < snapshots.size(); ++index) {
+        if (index > 0) {
+            std::cout << ",";
+        }
+        const auto& lineage = snapshots[index];
+        std::cout
+            << "{\"id\":" << lineage.id
+            << ",\"parent_id\":" << lineage.parentId
+            << ",\"depth\":" << static_cast<int>(lineage.depth)
+            << ",\"age\":" << lineage.age
+            << ",\"novelty_at_branch\":" << lineage.noveltyAtBranch
+            << ",\"population\":" << lineage.population
+            << ",\"peak_population\":" << lineage.peakPopulation
+            << ",\"avg_brain_complexity\":" << lineage.avgBrainComplexity
+            << "}";
+    }
+    std::cout << "]";
+}
+
+void printJsonWorldSnapshot(const alife::WorldSnapshot& snapshot) {
+    std::cout
+        << "{\"seed\":" << snapshot.seed
+        << ",\"time_seconds\":" << snapshot.timeSeconds
+        << ",\"world_width\":" << snapshot.worldWidth
+        << ",\"world_height\":" << snapshot.worldHeight
+        << ",\"population\":" << snapshot.population
+        << ",\"blooms\":" << snapshot.blooms
+        << ",\"carrion\":" << snapshot.carrion
+        << ",\"reefs\":" << snapshot.reefs
+        << ",\"births\":" << snapshot.births
+        << ",\"deaths\":" << snapshot.deaths
+        << ",\"extinctions\":" << snapshot.extinctions
+        << ",\"season\":" << snapshot.season
+        << ",\"active_lineages\":" << snapshot.activeLineages
+        << ",\"dominant_lineage_share\":" << snapshot.dominantLineageShare
+        << ",\"selected_creature\":";
+    printJsonCreatureSnapshot(snapshot.selectedCreature);
+    std::cout << ",\"top_energy_creature\":";
+    printJsonCreatureSnapshot(snapshot.topEnergyCreature);
+    std::cout << ",\"top_lineages\":";
+    printJsonLineageSnapshots(snapshot.topLineages);
+    std::cout << "}";
+}
+
+void printSmokeSummary(const RunSummary& summary, bool snapshotOutput) {
     std::cout
         << "smoke-test population=" << summary.population
         << " blooms=" << summary.blooms
@@ -156,16 +429,24 @@ void printSmokeSummary(const RunSummary& summary) {
         << " feed_predation=" << summary.feedPredation
         << " spend_upkeep=" << summary.spendUpkeep
         << " spend_repro=" << summary.spendReproduction
+        << " wall_seconds=" << summary.wallSeconds
+        << " steps_per_second=" << summary.stepsPerSecond
         << " avg_repro_threshold=" << summary.averageReproductionThreshold
         << '\n';
+    if (snapshotOutput && summary.hasSnapshot) {
+        printTextWorldSnapshot(summary.snapshot);
+    }
 }
 
-void printJsonRunSummary(const RunSummary& summary) {
+void printJsonRunSummary(const RunSummary& summary, bool snapshotOutput) {
     std::cout
         << std::fixed << std::setprecision(6)
         << "{\"kind\":\"run\""
         << ",\"seed\":" << summary.seed
         << ",\"steps\":" << summary.steps
+        << ",\"wall_seconds\":" << summary.wallSeconds
+        << ",\"steps_per_second\":" << summary.stepsPerSecond
+        << ",\"simulated_seconds\":" << summary.simulatedSeconds
         << ",\"population\":" << summary.population
         << ",\"blooms\":" << summary.blooms
         << ",\"carrion\":" << summary.carrion
@@ -188,24 +469,26 @@ void printJsonRunSummary(const RunSummary& summary) {
         << ",\"spend_upkeep\":" << summary.spendUpkeep
         << ",\"spend_reproduction\":" << summary.spendReproduction
         << ",\"avg_reproduction_threshold\":" << summary.averageReproductionThreshold
-        << "}\n";
+        << ",\"snapshot\":";
+    if (snapshotOutput && summary.hasSnapshot) {
+        printJsonWorldSnapshot(summary.snapshot);
+    } else {
+        std::cout << "null";
+    }
+    std::cout << "}\n";
 }
 
 void printTextBatchSummary(
     const std::vector<RunSummary>& runs,
-    int extinctRuns,
-    float meanPopulation,
-    float minPopulation,
-    float maxPopulation,
-    float meanLineages,
-    float meanDominantLineageShare,
-    float meanAverageEnergy,
-    float meanAverageShelter
+    const BatchSummary& batch,
+    bool snapshotOutput,
+    const std::string& scenarioLabel
 ) {
     std::cout
         << "batch-run count=" << runs.size()
         << " steps=" << (runs.empty() ? 0 : runs.front().steps)
         << " start_seed=" << (runs.empty() ? 0 : runs.front().seed)
+        << " scenario=" << scenarioLabel
         << '\n';
     for (const RunSummary& run : runs) {
         std::cout
@@ -218,34 +501,36 @@ void printTextBatchSummary(
             << " dom_lineage=" << run.dominantLineageShare
             << " avg_energy=" << run.averageEnergy
             << " avg_shelter=" << run.avgShelter
+            << " wall_seconds=" << run.wallSeconds
+            << " steps_per_second=" << run.stepsPerSecond
             << '\n';
+        if (snapshotOutput && run.hasSnapshot) {
+            printTextWorldSnapshot(run.snapshot);
+        }
     }
     std::cout
         << "summary runs=" << runs.size()
-        << " extinct_runs=" << extinctRuns
-        << " mean_population=" << meanPopulation
-        << " min_population=" << minPopulation
-        << " max_population=" << maxPopulation
-        << " mean_lineages=" << meanLineages
-        << " mean_dom_lineage=" << meanDominantLineageShare
-        << " mean_avg_energy=" << meanAverageEnergy
-        << " mean_avg_shelter=" << meanAverageShelter
+        << " extinct_runs=" << batch.extinctRuns
+        << " total_wall_seconds=" << batch.totalWallSeconds
+        << " mean_steps_per_second=" << batch.meanStepsPerSecond
+        << " mean_population=" << batch.meanPopulation
+        << " min_population=" << batch.minPopulation
+        << " max_population=" << batch.maxPopulation
+        << " mean_lineages=" << batch.meanLineages
+        << " mean_dom_lineage=" << batch.meanDominantLineageShare
+        << " mean_avg_energy=" << batch.meanAverageEnergy
+        << " mean_avg_shelter=" << batch.meanAverageShelter
         << '\n';
 }
 
 void printJsonBatchSummary(
     const std::vector<RunSummary>& runs,
-    int extinctRuns,
-    float meanPopulation,
-    float minPopulation,
-    float maxPopulation,
-    float meanLineages,
-    float meanDominantLineageShare,
-    float meanAverageEnergy,
-    float meanAverageShelter
+    const BatchSummary& batch,
+    bool snapshotOutput,
+    const std::string& scenarioLabel
 ) {
     for (const RunSummary& run : runs) {
-        printJsonRunSummary(run);
+        printJsonRunSummary(run, snapshotOutput);
     }
     std::cout
         << std::fixed << std::setprecision(6)
@@ -253,14 +538,17 @@ void printJsonBatchSummary(
         << ",\"runs\":" << runs.size()
         << ",\"steps\":" << (runs.empty() ? 0 : runs.front().steps)
         << ",\"start_seed\":" << (runs.empty() ? 0 : runs.front().seed)
-        << ",\"extinct_runs\":" << extinctRuns
-        << ",\"mean_population\":" << meanPopulation
-        << ",\"min_population\":" << minPopulation
-        << ",\"max_population\":" << maxPopulation
-        << ",\"mean_lineages\":" << meanLineages
-        << ",\"mean_dominant_lineage_share\":" << meanDominantLineageShare
-        << ",\"mean_avg_energy\":" << meanAverageEnergy
-        << ",\"mean_avg_shelter\":" << meanAverageShelter
+        << ",\"scenario\":\"" << scenarioLabel << "\""
+        << ",\"extinct_runs\":" << batch.extinctRuns
+        << ",\"total_wall_seconds\":" << batch.totalWallSeconds
+        << ",\"mean_steps_per_second\":" << batch.meanStepsPerSecond
+        << ",\"mean_population\":" << batch.meanPopulation
+        << ",\"min_population\":" << batch.minPopulation
+        << ",\"max_population\":" << batch.maxPopulation
+        << ",\"mean_lineages\":" << batch.meanLineages
+        << ",\"mean_dominant_lineage_share\":" << batch.meanDominantLineageShare
+        << ",\"mean_avg_energy\":" << batch.meanAverageEnergy
+        << ",\"mean_avg_shelter\":" << batch.meanAverageShelter
         << "}\n";
 }
 
@@ -268,10 +556,16 @@ void printJsonBatchSummary(
 
 int main(int argc, char** argv) {
     const CliOptions options = parseArgs(argc, argv);
+    const std::string scenarioLabel = scenarioLabelForOptions(options);
 
     if (options.smokeTest) {
-        const RunSummary summary = runSummaryForSeed(options.seed, options.smokeSteps);
-        printSmokeSummary(summary);
+        const RunSummary summary = runSummaryForSeed(
+            options.seed,
+            options.smokeSteps,
+            options.snapshotOutput,
+            options.snapshotLineageCount
+        );
+        printSmokeSummary(summary, options.snapshotOutput);
         return summary.population > 0 ? 0 : 1;
     }
 
@@ -279,68 +573,35 @@ int main(int argc, char** argv) {
         std::vector<RunSummary> runs;
         runs.reserve(static_cast<std::size_t>(options.batchCount));
 
-        float minPopulation = std::numeric_limits<float>::max();
-        float maxPopulation = 0.0f;
-        float totalPopulation = 0.0f;
-        float totalLineages = 0.0f;
-        float totalDominantLineageShare = 0.0f;
-        float totalAverageEnergy = 0.0f;
-        float totalAverageShelter = 0.0f;
-        int extinctRuns = 0;
-
         for (int runIndex = 0; runIndex < options.batchCount; ++runIndex) {
             const std::uint64_t runSeed = options.seed + static_cast<std::uint64_t>(runIndex) * static_cast<std::uint64_t>(options.seedStride);
-            const RunSummary summary = runSummaryForSeed(runSeed, options.smokeSteps);
+            const RunSummary summary = runSummaryForSeed(
+                runSeed,
+                options.smokeSteps,
+                options.snapshotOutput,
+                options.snapshotLineageCount
+            );
             runs.push_back(summary);
-
-            const float population = static_cast<float>(summary.population);
-            minPopulation = std::min(minPopulation, population);
-            maxPopulation = std::max(maxPopulation, population);
-            totalPopulation += population;
-            totalLineages += static_cast<float>(summary.activeLineages);
-            totalDominantLineageShare += summary.dominantLineageShare;
-            totalAverageEnergy += summary.averageEnergy;
-            totalAverageShelter += summary.avgShelter;
-            if (summary.extinctions > 0 || summary.population == 0) {
-                ++extinctRuns;
-            }
         }
-
-        const float runCount = static_cast<float>(runs.size());
-        const float meanPopulation = runCount > 0.0f ? totalPopulation / runCount : 0.0f;
-        const float meanLineages = runCount > 0.0f ? totalLineages / runCount : 0.0f;
-        const float meanDominantLineageShare = runCount > 0.0f ? totalDominantLineageShare / runCount : 0.0f;
-        const float meanAverageEnergy = runCount > 0.0f ? totalAverageEnergy / runCount : 0.0f;
-        const float meanAverageShelter = runCount > 0.0f ? totalAverageShelter / runCount : 0.0f;
-        const float safeMinPopulation = runs.empty() ? 0.0f : minPopulation;
+        const BatchSummary batch = summarizeBatchRuns(runs);
 
         if (options.reportFormat == ReportFormat::JsonLines) {
             printJsonBatchSummary(
                 runs,
-                extinctRuns,
-                meanPopulation,
-                safeMinPopulation,
-                maxPopulation,
-                meanLineages,
-                meanDominantLineageShare,
-                meanAverageEnergy,
-                meanAverageShelter
+                batch,
+                options.snapshotOutput,
+                scenarioLabel
             );
         } else {
             printTextBatchSummary(
                 runs,
-                extinctRuns,
-                meanPopulation,
-                safeMinPopulation,
-                maxPopulation,
-                meanLineages,
-                meanDominantLineageShare,
-                meanAverageEnergy,
-                meanAverageShelter
+                batch,
+                options.snapshotOutput,
+                scenarioLabel
             );
         }
 
-        return extinctRuns == 0 ? 0 : 1;
+        return batch.extinctRuns == 0 ? 0 : 1;
     }
 
     alife::Simulation simulation;
