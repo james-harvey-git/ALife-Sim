@@ -191,6 +191,12 @@ struct Stats {
     float avgBrainConnections = 0.0f;
     float avgSubstrateContact = 0.0f;
     float avgLocalShear = 0.0f;
+    float energyFromAmbientGrazing = 0.0f;
+    float energyFromBloomHarvest = 0.0f;
+    float energyFromCarrion = 0.0f;
+    float energyFromPredation = 0.0f;
+    float energySpentOnUpkeep = 0.0f;
+    float energySpentOnReproduction = 0.0f;
     float season = 0.0f;
     int grazers = 0;
     int omnivores = 0;

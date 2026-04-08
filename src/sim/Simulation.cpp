@@ -858,7 +858,9 @@ Genome makeAncestorGenome(
     appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 1, NodeKind::Output, 2, 0.7f);
     appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 2, NodeKind::Output, 2, 0.7f);
     appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 3, NodeKind::Output, 2, 0.7f);
-    genome.brain.outputBias[2] = 0.35f;
+    // Keep the ancestral lineage biased toward trying to graze so early worlds
+    // do not fail simply because no creature attempts to harvest energy.
+    genome.brain.outputBias[2] = 0.48f;
 
     appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 4, NodeKind::Output, 3, 1.4f);
     genome.brain.outputBias[3] = -0.55f;
@@ -1938,6 +1940,7 @@ void Simulation::step(float dt) {
             * (0.65f + std::abs(thrustInput) * 0.55f + std::abs(turnInput) * 0.25f + creature.signal * 0.3f
                 + creature.bodySlip * 0.08f + creature.bodyCurvature * 0.025f);
         creature.energy -= movementCost;
+        stats_.energySpentOnUpkeep += movementCost;
 
         if (creature.energy > creature.traits.reproductionThreshold * 0.62f) {
             creature.health = std::min(creature.traits.maxHealth, creature.health + dt * (1.0f + creature.genome.morphology.armor * 2.0f));
@@ -2137,8 +2140,10 @@ void Simulation::step(float dt) {
 
         if (grazeDrive > 0.18f) {
             const float ambientNutrient = sampleNutrient(creature.position.x, creature.position.y);
-            creature.energy += ambientNutrient * grazeDrive * dt
+            const float ambientGain = ambientNutrient * grazeDrive * dt
                 * (1.4f + creature.genome.ecology.plantAffinity * 2.35f);
+            creature.energy += ambientGain;
+            stats_.energyFromAmbientGrazing += ambientGain;
 
             Bloom* bestBloom = nullptr;
             float bestDistSq = std::numeric_limits<float>::max();
@@ -2163,7 +2168,9 @@ void Simulation::step(float dt) {
                     creature.traits.grazeRate * grazeDrive * dt
                 );
                 bestBloom->energy -= harvest;
-                creature.energy += harvest * (0.9f + creature.genome.ecology.plantAffinity * 1.22f);
+                const float harvestGain = harvest * (0.9f + creature.genome.ecology.plantAffinity * 1.22f);
+                creature.energy += harvestGain;
+                stats_.energyFromBloomHarvest += harvestGain;
             }
         }
 
@@ -2190,8 +2197,10 @@ void Simulation::step(float dt) {
                     creature.traits.carrionRate * biteDrive * dt
                 );
                 bestCarrion->energy -= harvest;
-                creature.energy += harvest * (0.35f + creature.genome.ecology.meatAffinity * 0.6f
+                const float carrionGain = harvest * (0.35f + creature.genome.ecology.meatAffinity * 0.6f
                     + creature.genome.ecology.scavengerBias * 0.4f);
+                creature.energy += carrionGain;
+                stats_.energyFromCarrion += carrionGain;
                 creature.cooldown = 0.12f;
             } else {
                 hash.query(creature.position, creature.traits.biteReach * 1.6f, nearby);
@@ -2246,7 +2255,9 @@ void Simulation::step(float dt) {
                     const float impact = creature.traits.biteDamage * biteDrive * dt;
                     const float mitigation = 1.0f - bestTarget->genome.morphology.armor * 0.42f;
                     bestTarget->health -= impact * mitigation;
-                    creature.energy += impact * (0.08f + creature.genome.ecology.meatAffinity * 0.16f);
+                    const float predationGain = impact * (0.08f + creature.genome.ecology.meatAffinity * 0.16f);
+                    creature.energy += predationGain;
+                    stats_.energyFromPredation += predationGain;
                     creature.cooldown = 0.22f;
                 }
             }
@@ -2290,6 +2301,7 @@ void Simulation::step(float dt) {
             const float childEnergy = std::min(creature.energy * 0.46f, creature.traits.offspringEnergy * 1.35f);
             creature.energy -= childEnergy;
             creature.health -= childEnergy * 0.03f;
+            stats_.energySpentOnReproduction += childEnergy;
 
             const Vec2 offset {
                 std::cos(creature.angle + kPi) * (creature.traits.collisionRadius + 12.0f),

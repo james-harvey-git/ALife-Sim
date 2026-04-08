@@ -26,6 +26,7 @@ The long-term goal is not a scripted predator/prey toy. The goal is a watchable,
 - If the mechanics are sound, the parameters we should ideally be tuning are physics-model parameters, not lots of ad hoc ecology knobs.
 - Make regular git commits.
 - Do not be shy about requesting elevated permissions when they are genuinely useful.
+- Defer fully fleshed-out eating and attacking animations until after higher-priority mechanics work such as environment, physics, and base interaction loops are solid.
 
 ## Current Architecture
 

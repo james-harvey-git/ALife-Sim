@@ -75,6 +75,12 @@ int main(int argc, char** argv) {
             << " avg_brain_load=" << stats.avgBrainComplexity
             << " avg_contact=" << stats.avgSubstrateContact
             << " avg_shear=" << stats.avgLocalShear
+            << " feed_ambient=" << stats.energyFromAmbientGrazing
+            << " feed_bloom=" << stats.energyFromBloomHarvest
+            << " feed_carrion=" << stats.energyFromCarrion
+            << " feed_predation=" << stats.energyFromPredation
+            << " spend_upkeep=" << stats.energySpentOnUpkeep
+            << " spend_repro=" << stats.energySpentOnReproduction
             << " avg_repro_threshold=" << averageThreshold
             << '\n';
         return stats.population > 0 ? 0 : 1;
