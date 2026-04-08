@@ -18,6 +18,11 @@ constexpr std::size_t kTargetBlooms = 220;
 constexpr std::size_t kTargetReefs = 8;
 constexpr float kBloomRespawnChance = 1.75f;
 constexpr float kSpatialCellSize = 120.0f;
+constexpr int kNutrientGridWidth = 96;
+constexpr int kNutrientGridHeight = 72;
+constexpr float kNutrientCellCapacity = 5.0f;
+constexpr float kNutrientRecoveryRate = 0.42f;
+constexpr float kNutrientDiffusionRate = 0.16f;
 constexpr std::uint32_t kInputNodeBase = 1;
 constexpr std::uint32_t kMemoryNodeBase = kInputNodeBase + kInputCount;
 constexpr std::uint32_t kOutputNodeBase = kMemoryNodeBase + kMemorySize;
@@ -151,6 +156,20 @@ float seasonFactor(float timeSeconds) {
     return 0.7f + 0.3f * std::sin(timeSeconds * 0.045f);
 }
 
+int wrapGridCoord(int value, int size) {
+    while (value < 0) {
+        value += size;
+    }
+    while (value >= size) {
+        value -= size;
+    }
+    return value;
+}
+
+std::size_t nutrientIndex(int x, int y) {
+    return static_cast<std::size_t>(wrapGridCoord(y, kNutrientGridHeight) * kNutrientGridWidth + wrapGridCoord(x, kNutrientGridWidth));
+}
+
 struct HabitatSample {
     float proximity = 0.0f;
     float contact = 0.0f;
@@ -210,6 +229,199 @@ float sampleNutrientWithReefs(
     const HabitatSample habitat = sampleHabitatField(x, y, reefs, worldWidth, worldHeight);
     const float base = sampleNutrientField(x, y, timeSeconds);
     return clamp01(base * (1.0f - habitat.contact * 0.35f) + habitat.nutrientBoost);
+}
+
+float sampleNutrientGridNormalized(
+    const std::vector<float>& grid,
+    float x,
+    float y,
+    float worldWidth,
+    float worldHeight
+) {
+    if (grid.empty()) {
+        return 0.0f;
+    }
+
+    const float gx = wrapAxis(x, worldWidth) / worldWidth * static_cast<float>(kNutrientGridWidth);
+    const float gy = wrapAxis(y, worldHeight) / worldHeight * static_cast<float>(kNutrientGridHeight);
+    const int x0 = static_cast<int>(std::floor(gx));
+    const int y0 = static_cast<int>(std::floor(gy));
+    const int x1 = x0 + 1;
+    const int y1 = y0 + 1;
+    const float tx = gx - std::floor(gx);
+    const float ty = gy - std::floor(gy);
+
+    const float v00 = grid[nutrientIndex(x0, y0)];
+    const float v10 = grid[nutrientIndex(x1, y0)];
+    const float v01 = grid[nutrientIndex(x0, y1)];
+    const float v11 = grid[nutrientIndex(x1, y1)];
+
+    const float top = std::lerp(v00, v10, tx);
+    const float bottom = std::lerp(v01, v11, tx);
+    return clamp01(std::lerp(top, bottom, ty) / kNutrientCellCapacity);
+}
+
+float harvestNutrientGrid(
+    std::vector<float>& grid,
+    float x,
+    float y,
+    float amount,
+    float worldWidth,
+    float worldHeight
+) {
+    if (grid.empty() || amount <= 0.0f) {
+        return 0.0f;
+    }
+
+    const float gx = wrapAxis(x, worldWidth) / worldWidth * static_cast<float>(kNutrientGridWidth);
+    const float gy = wrapAxis(y, worldHeight) / worldHeight * static_cast<float>(kNutrientGridHeight);
+    const int x0 = static_cast<int>(std::floor(gx));
+    const int y0 = static_cast<int>(std::floor(gy));
+    const float tx = gx - std::floor(gx);
+    const float ty = gy - std::floor(gy);
+
+    struct WeightedCell {
+        std::size_t index = 0;
+        float weight = 0.0f;
+    };
+
+    std::array<WeightedCell, 4> cells {{
+        {nutrientIndex(x0, y0), (1.0f - tx) * (1.0f - ty)},
+        {nutrientIndex(x0 + 1, y0), tx * (1.0f - ty)},
+        {nutrientIndex(x0, y0 + 1), (1.0f - tx) * ty},
+        {nutrientIndex(x0 + 1, y0 + 1), tx * ty}
+    }};
+
+    std::sort(cells.begin(), cells.end(), [](const WeightedCell& lhs, const WeightedCell& rhs) {
+        return lhs.weight > rhs.weight;
+    });
+
+    float remaining = amount;
+    float harvested = 0.0f;
+    for (const WeightedCell& cell : cells) {
+        if (remaining <= 1e-6f || cell.weight <= 1e-6f) {
+            continue;
+        }
+        const float requested = std::max(remaining * cell.weight, remaining * 0.18f);
+        const float take = std::min(grid[cell.index], requested);
+        grid[cell.index] -= take;
+        harvested += take;
+        remaining -= take;
+    }
+
+    if (remaining > 1e-6f) {
+        for (const WeightedCell& cell : cells) {
+            if (remaining <= 1e-6f) {
+                break;
+            }
+            const float take = std::min(grid[cell.index], remaining);
+            grid[cell.index] -= take;
+            harvested += take;
+            remaining -= take;
+        }
+    }
+
+    return harvested;
+}
+
+void initializeNutrientGrid(
+    std::vector<float>& grid,
+    float timeSeconds,
+    const std::vector<Reef>& reefs,
+    float worldWidth,
+    float worldHeight
+) {
+    grid.assign(static_cast<std::size_t>(kNutrientGridWidth * kNutrientGridHeight), 0.0f);
+    const float cellWidth = worldWidth / static_cast<float>(kNutrientGridWidth);
+    const float cellHeight = worldHeight / static_cast<float>(kNutrientGridHeight);
+
+    for (int y = 0; y < kNutrientGridHeight; ++y) {
+        for (int x = 0; x < kNutrientGridWidth; ++x) {
+            const float worldX = (static_cast<float>(x) + 0.5f) * cellWidth;
+            const float worldY = (static_cast<float>(y) + 0.5f) * cellHeight;
+            grid[nutrientIndex(x, y)] = sampleNutrientWithReefs(
+                worldX,
+                worldY,
+                timeSeconds,
+                reefs,
+                worldWidth,
+                worldHeight
+            ) * kNutrientCellCapacity;
+        }
+    }
+}
+
+void updateNutrientGrid(
+    std::vector<float>& grid,
+    std::vector<float>& scratch,
+    float timeSeconds,
+    const std::vector<Reef>& reefs,
+    float worldWidth,
+    float worldHeight,
+    float dt
+) {
+    if (grid.empty()) {
+        initializeNutrientGrid(grid, timeSeconds, reefs, worldWidth, worldHeight);
+    }
+    scratch.resize(grid.size());
+
+    const float cellWidth = worldWidth / static_cast<float>(kNutrientGridWidth);
+    const float cellHeight = worldHeight / static_cast<float>(kNutrientGridHeight);
+
+    for (int y = 0; y < kNutrientGridHeight; ++y) {
+        for (int x = 0; x < kNutrientGridWidth; ++x) {
+            const std::size_t index = nutrientIndex(x, y);
+            const float worldX = (static_cast<float>(x) + 0.5f) * cellWidth;
+            const float worldY = (static_cast<float>(y) + 0.5f) * cellHeight;
+            const float target = sampleNutrientWithReefs(
+                worldX,
+                worldY,
+                timeSeconds,
+                reefs,
+                worldWidth,
+                worldHeight
+            ) * kNutrientCellCapacity;
+            const float current = grid[index];
+            const float neighborAverage = (
+                grid[nutrientIndex(x - 1, y)] +
+                grid[nutrientIndex(x + 1, y)] +
+                grid[nutrientIndex(x, y - 1)] +
+                grid[nutrientIndex(x, y + 1)]
+            ) * 0.25f;
+            const float recovery = std::max(0.0f, target - current) * kNutrientRecoveryRate * dt;
+            const float diffusion = (neighborAverage - current) * kNutrientDiffusionRate * dt;
+            scratch[index] = std::clamp(current + recovery + diffusion, 0.0f, kNutrientCellCapacity);
+        }
+    }
+
+    grid.swap(scratch);
+}
+
+Vec2 sampleBloomSpawnPosition(
+    std::mt19937_64& rng,
+    const std::vector<float>& nutrientGrid,
+    float worldWidth,
+    float worldHeight
+) {
+    Vec2 best {
+        randomFloat(rng, 0.0f, worldWidth),
+        randomFloat(rng, 0.0f, worldHeight)
+    };
+    float bestScore = sampleNutrientGridNormalized(nutrientGrid, best.x, best.y, worldWidth, worldHeight);
+
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        const Vec2 candidate {
+            randomFloat(rng, 0.0f, worldWidth),
+            randomFloat(rng, 0.0f, worldHeight)
+        };
+        const float score = sampleNutrientGridNormalized(nutrientGrid, candidate.x, candidate.y, worldWidth, worldHeight);
+        if (score > bestScore) {
+            best = candidate;
+            bestScore = score;
+        }
+    }
+
+    return best;
 }
 
 Vec2 sampleCurrentWithReefs(
@@ -420,8 +632,8 @@ Traits deriveTraits(const Genome& genome) {
     traits.signalRange = traits.sensorRange * lerp(0.45f, 0.95f, genome.ecology.sociality);
 
     const float brainComplexity = brainComplexityScore(genome.brain);
-    traits.upkeep = 0.85f + traits.mass * 0.04f + traits.sensorRange * 0.008f
-        + genome.morphology.armor * 0.65f + brainComplexity * 0.55f;
+    traits.upkeep = 0.55f + traits.mass * 0.026f + traits.sensorRange * 0.0052f
+        + genome.morphology.armor * 0.36f + brainComplexity * 0.4f;
     traits.reproductionThreshold = 42.0f + traits.mass * 0.45f + genome.ecology.reproductionBias * 24.0f;
     traits.offspringEnergy = lerp(24.0f, 68.0f, genome.ecology.offspringInvestment) + traits.mass * 0.16f;
     traits.maxHealth = 52.0f + traits.mass * 2.25f + genome.morphology.armor * 22.0f;
@@ -1302,7 +1514,7 @@ Creature makeCreature(
     creature.angularVelocity = randomFloat(rng, -0.5f, 0.5f);
     creature.energy = energy;
     creature.health = creature.traits.maxHealth;
-    creature.age = randomFloat(rng, 0.0f, 20.0f);
+    creature.age = randomFloat(rng, 0.0f, 8.0f);
     creature.signal = 0.0f;
     creature.gaitPhase = randomFloat(rng, 0.0f, kTau);
     creature.lineageId = lineageId;
@@ -1360,6 +1572,8 @@ void Simulation::reset(std::uint64_t seed) {
     blooms_.clear();
     carrion_.clear();
     reefs_.clear();
+    nutrientGrid_.clear();
+    nutrientScratch_.clear();
     history_.clear();
     innovations_.clear();
     lineages_.clear();
@@ -1409,6 +1623,9 @@ void Simulation::reset(std::uint64_t seed) {
         }
     }
 
+    initializeNutrientGrid(nutrientGrid_, timeSeconds_, reefs_, worldWidth_, worldHeight_);
+    nutrientScratch_.resize(nutrientGrid_.size());
+
     for (std::size_t index = 0; index < kInitialPopulation; ++index) {
         const Vec2 position {
             randomFloat(rng_, 0.0f, worldWidth_),
@@ -1436,10 +1653,7 @@ void Simulation::reset(std::uint64_t seed) {
 
     for (std::size_t index = 0; index < kTargetBlooms; ++index) {
         Bloom bloom {};
-        bloom.position = {
-            randomFloat(rng_, 0.0f, worldWidth_),
-            randomFloat(rng_, 0.0f, worldHeight_)
-        };
+        bloom.position = sampleBloomSpawnPosition(rng_, nutrientGrid_, worldWidth_, worldHeight_);
         bloom.maxEnergy = randomFloat(rng_, 78.0f, 130.0f);
         bloom.energy = bloom.maxEnergy * randomFloat(rng_, 0.55f, 1.0f);
         bloom.regrowthRate = randomFloat(rng_, 5.0f, 14.0f);
@@ -1627,14 +1841,7 @@ float Simulation::timeSeconds() const {
 }
 
 float Simulation::sampleNutrient(float x, float y) const {
-    return sampleNutrientWithReefs(
-        wrapAxis(x, worldWidth_),
-        wrapAxis(y, worldHeight_),
-        timeSeconds_,
-        reefs_,
-        worldWidth_,
-        worldHeight_
-    );
+    return sampleNutrientGridNormalized(nutrientGrid_, x, y, worldWidth_, worldHeight_);
 }
 
 Vec2 Simulation::sampleCurrent(float x, float y) const {
@@ -1751,13 +1958,20 @@ void Simulation::step(float dt) {
 
     timeSeconds_ += dt;
     stats_.season = seasonFactor(timeSeconds_);
+    updateNutrientGrid(nutrientGrid_, nutrientScratch_, timeSeconds_, reefs_, worldWidth_, worldHeight_, dt);
 
     for (Bloom& bloom : blooms_) {
         const float nutrient = sampleNutrient(bloom.position.x, bloom.position.y);
-        bloom.energy = std::min(
-            bloom.maxEnergy,
-            bloom.energy + bloom.regrowthRate * nutrient * stats_.season * dt
+        const float bloomDraw = bloom.regrowthRate * nutrient * stats_.season * dt;
+        const float harvested = harvestNutrientGrid(
+            nutrientGrid_,
+            bloom.position.x,
+            bloom.position.y,
+            bloomDraw,
+            worldWidth_,
+            worldHeight_
         );
+        bloom.energy = std::min(bloom.maxEnergy, bloom.energy + harvested);
     }
 
     for (Carrion& chunk : carrion_) {
@@ -1769,10 +1983,7 @@ void Simulation::step(float dt) {
 
     while (blooms_.size() < kTargetBlooms) {
         Bloom bloom {};
-        bloom.position = {
-            randomFloat(rng_, 0.0f, worldWidth_),
-            randomFloat(rng_, 0.0f, worldHeight_)
-        };
+        bloom.position = sampleBloomSpawnPosition(rng_, nutrientGrid_, worldWidth_, worldHeight_);
         bloom.maxEnergy = randomFloat(rng_, 78.0f, 130.0f);
         bloom.energy = bloom.maxEnergy * randomFloat(rng_, 0.55f, 1.0f);
         bloom.regrowthRate = randomFloat(rng_, 5.0f, 14.0f);
@@ -1781,10 +1992,7 @@ void Simulation::step(float dt) {
 
     if (randomFloat(rng_, 0.0f, 1.0f) < kBloomRespawnChance * dt) {
         Bloom bloom {};
-        bloom.position = {
-            randomFloat(rng_, 0.0f, worldWidth_),
-            randomFloat(rng_, 0.0f, worldHeight_)
-        };
+        bloom.position = sampleBloomSpawnPosition(rng_, nutrientGrid_, worldWidth_, worldHeight_);
         bloom.maxEnergy = randomFloat(rng_, 78.0f, 130.0f);
         bloom.energy = bloom.maxEnergy * randomFloat(rng_, 0.35f, 1.0f);
         bloom.regrowthRate = randomFloat(rng_, 5.0f, 14.0f);
@@ -1937,7 +2145,7 @@ void Simulation::step(float dt) {
         integrateBodyChain(creature, dt, worldWidth_, worldHeight_, timeSeconds_, reefs_);
 
         const float movementCost = creature.traits.upkeep * dt
-            * (0.65f + std::abs(thrustInput) * 0.55f + std::abs(turnInput) * 0.25f + creature.signal * 0.3f
+            * (0.48f + std::abs(thrustInput) * 0.46f + std::abs(turnInput) * 0.22f + creature.signal * 0.24f
                 + creature.bodySlip * 0.08f + creature.bodyCurvature * 0.025f);
         creature.energy -= movementCost;
         stats_.energySpentOnUpkeep += movementCost;
@@ -2130,19 +2338,27 @@ void Simulation::step(float dt) {
         const float biteDrive = outputDrive(creature.outputs[3]);
         const float reproduceDrive = outputDrive(creature.outputs[5]);
         const Vec2 mouth = mouthPosition(creature);
+        float intakeThisStep = 0.0f;
         const float reproductiveReadiness = std::clamp(
             (creature.energy - creature.traits.reproductionThreshold * 0.78f)
                 / std::max(16.0f, creature.traits.reproductionThreshold * 0.42f),
             0.0f,
             1.0f
         ) * std::clamp(creature.age / 28.0f, 0.0f, 1.0f);
-        const float reproductionIntent = std::max(reproduceDrive, reproductiveReadiness);
 
         if (grazeDrive > 0.18f) {
-            const float ambientNutrient = sampleNutrient(creature.position.x, creature.position.y);
-            const float ambientGain = ambientNutrient * grazeDrive * dt
-                * (1.4f + creature.genome.ecology.plantAffinity * 2.35f);
+            const float substrateAccess = std::lerp(0.38f, 1.0f, creature.substrateProximity);
+            const float ambientHarvest = harvestNutrientGrid(
+                nutrientGrid_,
+                mouth.x,
+                mouth.y,
+                grazeDrive * dt * (0.7f + creature.genome.ecology.plantAffinity * 1.55f) * substrateAccess,
+                worldWidth_,
+                worldHeight_
+            );
+            const float ambientGain = ambientHarvest * (0.95f + creature.genome.ecology.plantAffinity * 0.45f);
             creature.energy += ambientGain;
+            intakeThisStep += ambientGain;
             stats_.energyFromAmbientGrazing += ambientGain;
 
             Bloom* bestBloom = nullptr;
@@ -2170,6 +2386,7 @@ void Simulation::step(float dt) {
                 bestBloom->energy -= harvest;
                 const float harvestGain = harvest * (0.9f + creature.genome.ecology.plantAffinity * 1.22f);
                 creature.energy += harvestGain;
+                intakeThisStep += harvestGain;
                 stats_.energyFromBloomHarvest += harvestGain;
             }
         }
@@ -2200,6 +2417,7 @@ void Simulation::step(float dt) {
                 const float carrionGain = harvest * (0.35f + creature.genome.ecology.meatAffinity * 0.6f
                     + creature.genome.ecology.scavengerBias * 0.4f);
                 creature.energy += carrionGain;
+                intakeThisStep += carrionGain;
                 stats_.energyFromCarrion += carrionGain;
                 creature.cooldown = 0.12f;
             } else {
@@ -2257,11 +2475,26 @@ void Simulation::step(float dt) {
                     bestTarget->health -= impact * mitigation;
                     const float predationGain = impact * (0.08f + creature.genome.ecology.meatAffinity * 0.16f);
                     creature.energy += predationGain;
+                    intakeThisStep += predationGain;
                     stats_.energyFromPredation += predationGain;
                     creature.cooldown = 0.22f;
                 }
             }
         }
+
+        const float intakeRate = intakeThisStep / std::max(dt, 1e-4f);
+        creature.recentIntake = std::lerp(
+            creature.recentIntake,
+            intakeRate,
+            intakeRate > creature.recentIntake ? 0.14f : 0.06f
+        );
+        const float intakeMomentum = std::clamp(
+            creature.recentIntake / (0.08f + creature.traits.mass * 0.0008f),
+            0.0f,
+            1.0f
+        );
+        const float reproductionIntent = std::max(reproduceDrive, reproductiveReadiness)
+            * (0.25f + intakeMomentum * 0.75f);
 
         if (reproductionIntent > 0.4f
             && creature.energy > creature.traits.reproductionThreshold * 0.92f

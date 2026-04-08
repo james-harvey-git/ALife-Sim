@@ -133,6 +133,7 @@ struct Creature {
     float age = 0.0f;
     float signal = 0.0f;
     float cooldown = 0.0f;
+    float recentIntake = 0.0f;
     float gaitPhase = 0.0f;
     float bodyCurvature = 0.0f;
     float bodySlip = 0.0f;
@@ -344,6 +345,8 @@ private:
     std::vector<Bloom> blooms_ {};
     std::vector<Carrion> carrion_ {};
     std::vector<Reef> reefs_ {};
+    std::vector<float> nutrientGrid_ {};
+    std::vector<float> nutrientScratch_ {};
     std::deque<HistorySample> history_ {};
     std::vector<InnovationRecord> innovations_ {};
     std::vector<LineageRecord> lineages_ {};
