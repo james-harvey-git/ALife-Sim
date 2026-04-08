@@ -16,7 +16,15 @@ public:
         SelectRandom,
         SelectTopEnergy,
         SelectDominantLineage,
-        SelectNewestLineage
+        SelectNewestLineage,
+        CycleOverlay
+    };
+
+    enum class DebugOverlay {
+        None,
+        Nutrient,
+        Shelter,
+        Shear
     };
 
     Renderer() = default;
@@ -25,8 +33,11 @@ public:
     bool initialize();
     void shutdown();
     void draw(const Simulation& simulation, bool paused, int timeScale);
+    void cycleDebugOverlay();
+    void scrollSelection(float deltaPixels);
 
     bool screenPointInWorld(int screenX, int screenY) const;
+    bool screenPointInSelection(int screenX, int screenY) const;
     std::optional<Vec2> screenToWorld(int screenX, int screenY, const Simulation& simulation) const;
     UiAction uiActionAt(int screenX, int screenY) const;
 
@@ -42,12 +53,18 @@ private:
     TTF_Font* font_ = nullptr;
     TTF_Font* smallFont_ = nullptr;
     SDL_FRect worldViewport_ {static_cast<float>(kMargin), static_cast<float>(kMargin), 100.0f, 100.0f};
+    SDL_FRect selectionViewport_ {0.0f, 0.0f, 0.0f, 0.0f};
     SDL_FRect randomSelectButton_ {0.0f, 0.0f, 0.0f, 0.0f};
     SDL_FRect topEnergyButton_ {0.0f, 0.0f, 0.0f, 0.0f};
     SDL_FRect dominantLineageButton_ {0.0f, 0.0f, 0.0f, 0.0f};
     SDL_FRect newestLineageButton_ {0.0f, 0.0f, 0.0f, 0.0f};
+    SDL_FRect overlayButton_ {0.0f, 0.0f, 0.0f, 0.0f};
+    DebugOverlay debugOverlay_ = DebugOverlay::None;
+    float selectionScroll_ = 0.0f;
+    std::uint64_t lastSelectedCreatureId_ = 0;
 
     void updateViewport(const Simulation& simulation);
+    const char* debugOverlayLabel() const;
 };
 
 }  // namespace alife

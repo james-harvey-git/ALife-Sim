@@ -18,7 +18,7 @@ struct Vec2 {
 
 constexpr int kSensorBuckets = 5;
 constexpr int kSensorChannels = 5;
-constexpr int kInternalInputs = 8;
+constexpr int kInternalInputs = 9;
 constexpr int kMemorySize = 4;
 constexpr int kBodySegments = 4;
 constexpr int kInputCount = kSensorBuckets * kSensorChannels + kInternalInputs;
@@ -140,6 +140,7 @@ struct Creature {
     float flowAlignment = 0.0f;
     float substrateProximity = 0.0f;
     float substrateContact = 0.0f;
+    float substrateShelter = 0.0f;
     float localShear = 0.0f;
     std::uint32_t lineageId = 0;
     std::uint8_t lineageDepth = 0;
@@ -191,6 +192,7 @@ struct Stats {
     float avgBrainComplexity = 0.0f;
     float avgBrainConnections = 0.0f;
     float avgSubstrateContact = 0.0f;
+    float avgSubstrateShelter = 0.0f;
     float avgLocalShear = 0.0f;
     float energyFromAmbientGrazing = 0.0f;
     float energyFromBloomHarvest = 0.0f;
@@ -217,6 +219,7 @@ struct HistorySample {
     float avgMass = 0.0f;
     float avgBrainComplexity = 0.0f;
     float avgSubstrateContact = 0.0f;
+    float avgSubstrateShelter = 0.0f;
     int grazers = 0;
     int omnivores = 0;
     int hunters = 0;
@@ -252,6 +255,7 @@ struct SelectionInfo {
     float flowAlignment = 0.0f;
     float substrateProximity = 0.0f;
     float substrateContact = 0.0f;
+    float substrateShelter = 0.0f;
     float localShear = 0.0f;
     std::uint32_t lineageId = 0;
     std::uint32_t lineageParentId = 0;
@@ -272,6 +276,14 @@ struct SelectionInfo {
     std::array<float, kSensorBuckets> opportunitySense {};
     std::array<float, kSensorBuckets> threatSense {};
     std::array<float, kSensorBuckets> signalSense {};
+};
+
+struct EnvironmentProbe {
+    float nutrient = 0.0f;
+    Vec2 current {};
+    float substrate = 0.0f;
+    float shelter = 0.0f;
+    float shear = 0.0f;
 };
 
 struct InnovationRecord {
@@ -323,6 +335,7 @@ public:
     float timeSeconds() const;
     float sampleNutrient(float x, float y) const;
     Vec2 sampleCurrent(float x, float y) const;
+    EnvironmentProbe probeEnvironment(float x, float y) const;
 
 private:
     float worldWidth_ = 2400.0f;

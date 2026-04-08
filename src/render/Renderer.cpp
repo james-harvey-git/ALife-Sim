@@ -313,6 +313,44 @@ std::optional<Vec2> Renderer::screenToWorld(int screenX, int screenY, const Simu
     return Vec2 {nx * simulation.worldWidth(), ny * simulation.worldHeight()};
 }
 
+bool Renderer::screenPointInSelection(int screenX, int screenY) const {
+    return pointInRect(screenX, screenY, selectionViewport_);
+}
+
+void Renderer::cycleDebugOverlay() {
+    switch (debugOverlay_) {
+        case DebugOverlay::None:
+            debugOverlay_ = DebugOverlay::Nutrient;
+            break;
+        case DebugOverlay::Nutrient:
+            debugOverlay_ = DebugOverlay::Shelter;
+            break;
+        case DebugOverlay::Shelter:
+            debugOverlay_ = DebugOverlay::Shear;
+            break;
+        default:
+            debugOverlay_ = DebugOverlay::None;
+            break;
+    }
+}
+
+void Renderer::scrollSelection(float deltaPixels) {
+    selectionScroll_ = std::max(0.0f, selectionScroll_ + deltaPixels);
+}
+
+const char* Renderer::debugOverlayLabel() const {
+    switch (debugOverlay_) {
+        case DebugOverlay::Nutrient:
+            return "nutrient";
+        case DebugOverlay::Shelter:
+            return "lee shelter";
+        case DebugOverlay::Shear:
+            return "shear";
+        default:
+            return "off";
+    }
+}
+
 Renderer::UiAction Renderer::uiActionAt(int screenX, int screenY) const {
     if (pointInRect(screenX, screenY, randomSelectButton_)) {
         return UiAction::SelectRandom;
@@ -326,6 +364,9 @@ Renderer::UiAction Renderer::uiActionAt(int screenX, int screenY) const {
     if (pointInRect(screenX, screenY, newestLineageButton_)) {
         return UiAction::SelectNewestLineage;
     }
+    if (pointInRect(screenX, screenY, overlayButton_)) {
+        return UiAction::CycleOverlay;
+    }
     return UiAction::None;
 }
 
@@ -335,10 +376,12 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     }
 
     updateViewport(simulation);
+    selectionViewport_ = {0.0f, 0.0f, 0.0f, 0.0f};
     randomSelectButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
     topEnergyButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
     dominantLineageButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
     newestLineageButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
+    overlayButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
 
     const auto worldToScreen = [&](const Vec2& world) {
         return SDL_FPoint {
@@ -388,6 +431,11 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     const Stats& stats = simulation.stats();
     const auto info = simulation.selectionInfo();
     const auto& history = simulation.history();
+    const std::uint64_t currentSelectionId = simulation.selectedCreature();
+    if (currentSelectionId != lastSelectedCreatureId_) {
+        selectionScroll_ = 0.0f;
+        lastSelectedCreatureId_ = currentSelectionId;
+    }
 
     auto drawCard = [&](const SDL_FRect& rect, const std::string& title) {
         fillRect(renderer_, rect, {22, 28, 37, 255});
@@ -731,6 +779,52 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         }
     }
 
+    if (debugOverlay_ != DebugOverlay::None) {
+        constexpr int overlayColumns = 32;
+        constexpr int overlayRows = 24;
+        for (int row = 0; row < overlayRows; ++row) {
+            for (int column = 0; column < overlayColumns; ++column) {
+                const float tx = (static_cast<float>(column) + 0.5f) / static_cast<float>(overlayColumns);
+                const float ty = (static_cast<float>(row) + 0.5f) / static_cast<float>(overlayRows);
+                const EnvironmentProbe probe = simulation.probeEnvironment(
+                    tx * simulation.worldWidth(),
+                    ty * simulation.worldHeight()
+                );
+
+                float signal = 0.0f;
+                SDL_Color color {0, 0, 0, 0};
+                switch (debugOverlay_) {
+                    case DebugOverlay::Nutrient:
+                        signal = probe.nutrient;
+                        color = {84, 228, 152, static_cast<std::uint8_t>(18 + signal * 80.0f)};
+                        break;
+                    case DebugOverlay::Shelter:
+                        signal = probe.shelter;
+                        color = {96, 224, 214, static_cast<std::uint8_t>(18 + signal * 150.0f)};
+                        break;
+                    case DebugOverlay::Shear:
+                        signal = probe.shear;
+                        color = {118, 170, 255, static_cast<std::uint8_t>(18 + signal * 150.0f)};
+                        break;
+                    default:
+                        break;
+                }
+
+                if (signal < 0.02f) {
+                    continue;
+                }
+
+                const SDL_FRect cell {
+                    worldViewport_.x + tx * worldViewport_.w - worldViewport_.w / static_cast<float>(overlayColumns) * 0.5f,
+                    worldViewport_.y + ty * worldViewport_.h - worldViewport_.h / static_cast<float>(overlayRows) * 0.5f,
+                    worldViewport_.w / static_cast<float>(overlayColumns) + 1.0f,
+                    worldViewport_.h / static_cast<float>(overlayRows) + 1.0f
+                };
+                fillRect(renderer_, cell, color);
+            }
+        }
+    }
+
     for (const Reef& reef : simulation.reefs()) {
         const float radius = reef.radius * worldScale;
         const SDL_Color halo = {73, 108, 120, static_cast<std::uint8_t>(28 + reef.shear * 22.0f)};
@@ -811,6 +905,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     drawText(font_, summaryCard.x + 235.0f, summaryCard.y + 58.0f, "carrion " + std::to_string(stats.carrion), {222, 141, 112, 255});
     drawText(smallFont_, summaryCard.x + 12.0f, summaryCard.y + 84.0f, "births " + std::to_string(stats.births) + "  deaths " + std::to_string(stats.deaths), {181, 194, 208, 255});
     drawText(smallFont_, summaryCard.x + 208.0f, summaryCard.y + 84.0f, "season " + formatFloat(stats.season, 2) + "  reefs " + std::to_string(stats.reefs), {181, 194, 208, 255});
+    drawText(smallFont_, summaryCard.x + 12.0f, summaryCard.y + 100.0f, "overlay " + std::string(debugOverlayLabel()) + " (V)", {127, 153, 173, 255});
     textY += summaryCard.h + 10.0f;
 
     const SDL_FRect populationCard {panel.x + 14.0f, textY, panel.w - 28.0f, 136.0f};
@@ -841,20 +936,40 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     drawSeries(roleGraph, [](const HistorySample& sample) { return static_cast<float>(sample.grazers); }, roleMax, {125, 218, 139, 255});
     drawSeries(roleGraph, [](const HistorySample& sample) { return static_cast<float>(sample.omnivores); }, roleMax, {125, 173, 236, 255});
     drawSeries(roleGraph, [](const HistorySample& sample) { return static_cast<float>(sample.hunters); }, roleMax, {235, 146, 104, 255});
-    drawText(smallFont_, ecologyCard.x + 12.0f, ecologyCard.y + 96.0f, "avg plant " + formatFloat(stats.avgPlantAffinity, 2), {125, 218, 139, 255});
-    drawText(smallFont_, ecologyCard.x + 136.0f, ecologyCard.y + 96.0f, "avg meat " + formatFloat(stats.avgMeatAffinity, 2), {235, 146, 104, 255});
-    drawText(smallFont_, ecologyCard.x + 252.0f, ecologyCard.y + 96.0f, "contact " + formatFloat(stats.avgSubstrateContact, 2), {156, 188, 198, 255});
+    drawText(smallFont_, ecologyCard.x + 12.0f, ecologyCard.y + 96.0f, "plant " + formatFloat(stats.avgPlantAffinity, 2), {125, 218, 139, 255});
+    drawText(smallFont_, ecologyCard.x + 110.0f, ecologyCard.y + 96.0f, "meat " + formatFloat(stats.avgMeatAffinity, 2), {235, 146, 104, 255});
+    drawText(smallFont_, ecologyCard.x + 202.0f, ecologyCard.y + 96.0f, "reef " + formatFloat(stats.avgSubstrateContact, 2), {156, 188, 198, 255});
+    drawText(smallFont_, ecologyCard.x + 292.0f, ecologyCard.y + 96.0f, "lee " + formatFloat(stats.avgSubstrateShelter, 2), {142, 214, 198, 255});
     drawText(smallFont_, ecologyCard.x + 12.0f, ecologyCard.y + 114.0f, "lin " + std::to_string(stats.activeLineages), {158, 194, 240, 255});
     drawText(smallFont_, ecologyCard.x + 88.0f, ecologyCard.y + 114.0f, "dom " + formatFloat(stats.dominantLineageShare, 2), {206, 212, 220, 255});
-    drawText(smallFont_, ecologyCard.x + 176.0f, ecologyCard.y + 114.0f, "shear " + formatFloat(stats.avgLocalShear, 2), {128, 176, 212, 255});
-    drawText(smallFont_, ecologyCard.x + 272.0f, ecologyCard.y + 114.0f, "brain " + formatFloat(stats.avgBrainComplexity, 2), {184, 172, 236, 255});
+    drawText(smallFont_, ecologyCard.x + 170.0f, ecologyCard.y + 114.0f, "shear " + formatFloat(stats.avgLocalShear, 2), {128, 176, 212, 255});
+    drawText(smallFont_, ecologyCard.x + 264.0f, ecologyCard.y + 114.0f, "brain " + formatFloat(stats.avgBrainComplexity, 2), {184, 172, 236, 255});
     textY += ecologyCard.h + 10.0f;
 
-    const SDL_FRect selectionCard {panel.x + 14.0f, textY, panel.w - 28.0f, panel.y + panel.h - textY - 96.0f};
+    constexpr float controlsCardHeight = 110.0f;
+    const SDL_FRect selectionCard {
+        panel.x + 14.0f,
+        textY,
+        panel.w - 28.0f,
+        panel.y + panel.h - textY - (controlsCardHeight + 10.0f)
+    };
     drawCard(selectionCard, "Selection");
+    selectionViewport_ = {selectionCard.x + 10.0f, selectionCard.y + 32.0f, selectionCard.w - 20.0f, selectionCard.h - 42.0f};
+
+    const float selectionContentHeight = info.valid ? 339.0f : 150.0f;
+    const float maxSelectionScroll = std::max(0.0f, selectionContentHeight - selectionViewport_.h);
+    selectionScroll_ = std::clamp(selectionScroll_, 0.0f, maxSelectionScroll);
+
+    const SDL_Rect selectionClip {
+        static_cast<int>(std::floor(selectionViewport_.x)),
+        static_cast<int>(std::floor(selectionViewport_.y)),
+        static_cast<int>(std::ceil(selectionViewport_.w)),
+        static_cast<int>(std::ceil(selectionViewport_.h))
+    };
+    SDL_RenderSetClipRect(renderer_, &selectionClip);
 
     if (info.valid) {
-        float sy = selectionCard.y + 36.0f;
+        float sy = selectionViewport_.y + 4.0f - selectionScroll_;
         drawText(font_, selectionCard.x + 12.0f, sy, "#" + std::to_string(info.id) + "  " + toString(info.dietClass), {235, 239, 244, 255});
         sy += 22.0f;
         drawText(
@@ -883,7 +998,16 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "slip " + formatFloat(info.bodySlip, 2) + "  curve " + formatFloat(info.bodyCurvature, 2) + "  flow " + formatFloat(info.flowAlignment, 2), {179, 194, 210, 255});
         sy += 18.0f;
-        drawText(smallFont_, selectionCard.x + 12.0f, sy, "reef " + formatFloat(info.substrateProximity, 2) + "  contact " + formatFloat(info.substrateContact, 2) + "  shear " + formatFloat(info.localShear, 2), {160, 194, 208, 255});
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "reef " + formatFloat(info.substrateProximity, 2)
+                + "  touch " + formatFloat(info.substrateContact, 2)
+                + "  lee " + formatFloat(info.substrateShelter, 2)
+                + "  shear " + formatFloat(info.localShear, 2),
+            {160, 194, 208, 255}
+        );
         sy += 18.0f;
         drawText(
             smallFont_,
@@ -935,18 +1059,30 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         }};
         for (int sensorRow = 0; sensorRow < 5; ++sensorRow) {
             drawText(smallFont_, selectionCard.x + 12.0f, sy + 1.0f, sensorLabels[sensorRow], {205, 214, 222, 255});
-            drawBucketStrip(selectionCard.x + 78.0f, sy, selectionCard.w - 96.0f, 12.0f, sensorData[sensorRow], sensorColors[sensorRow]);
+            drawBucketStrip(selectionCard.x + 78.0f, sy, selectionViewport_.w - 92.0f, 12.0f, sensorData[sensorRow], sensorColors[sensorRow]);
             sy += 17.0f;
         }
     } else {
-        drawText(font_, selectionCard.x + 12.0f, selectionCard.y + 40.0f, "click a creature to inspect it", {184, 192, 201, 255});
-        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 66.0f, "selection shows body physics, chain stress proxies,", {125, 139, 155, 255});
-        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 84.0f, "controller outputs, topology overlay, sensor activity,", {125, 139, 155, 255});
-        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 102.0f, "and reef/substrate contact metrics.", {125, 139, 155, 255});
-        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 126.0f, "observer picks can lock onto dominant or newly branched lineages.", {125, 139, 155, 255});
+        const float sy = selectionViewport_.y + 8.0f - selectionScroll_;
+        drawText(font_, selectionCard.x + 12.0f, sy, "click a creature to inspect it", {184, 192, 201, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, sy + 26.0f, "selection shows body physics, chain stress proxies,", {125, 139, 155, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, sy + 44.0f, "controller outputs, topology overlay, sensor activity,", {125, 139, 155, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, sy + 62.0f, "and reef/substrate contact metrics.", {125, 139, 155, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, sy + 86.0f, "observer picks can lock onto dominant or newly branched lineages.", {125, 139, 155, 255});
     }
 
-    const SDL_FRect controlsCard {panel.x + 14.0f, panel.y + panel.h - 86.0f, panel.w - 28.0f, 86.0f};
+    SDL_RenderSetClipRect(renderer_, nullptr);
+    if (maxSelectionScroll > 1.0f) {
+        drawText(smallFont_, selectionCard.x + selectionCard.w - 84.0f, selectionCard.y + 7.0f, "wheel / [ ]", {124, 146, 164, 255});
+        const SDL_FRect track {selectionCard.x + selectionCard.w - 8.0f, selectionViewport_.y, 4.0f, selectionViewport_.h};
+        const float thumbHeight = std::max(24.0f, track.h * (selectionViewport_.h / selectionContentHeight));
+        const float thumbTravel = std::max(0.0f, track.h - thumbHeight);
+        const float thumbY = track.y + (selectionScroll_ / maxSelectionScroll) * thumbTravel;
+        fillRect(renderer_, track, {34, 44, 56, 255});
+        fillRect(renderer_, {track.x, thumbY, track.w, thumbHeight}, {114, 146, 170, 255});
+    }
+
+    const SDL_FRect controlsCard {panel.x + 14.0f, panel.y + panel.h - controlsCardHeight, panel.w - 28.0f, controlsCardHeight};
     drawCard(controlsCard, "Controls");
     const float buttonGap = 8.0f;
     const float buttonWidth = (controlsCard.w - 24.0f - buttonGap) * 0.5f;
@@ -955,10 +1091,12 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     topEnergyButton_ = {randomSelectButton_.x + buttonWidth + buttonGap, controlsCard.y + 32.0f, buttonWidth, buttonHeight};
     dominantLineageButton_ = {controlsCard.x + 12.0f, controlsCard.y + 56.0f, buttonWidth, buttonHeight};
     newestLineageButton_ = {dominantLineageButton_.x + buttonWidth + buttonGap, controlsCard.y + 56.0f, buttonWidth, buttonHeight};
+    overlayButton_ = {controlsCard.x + 12.0f, controlsCard.y + 80.0f, controlsCard.w - 24.0f, buttonHeight};
     drawButton(randomSelectButton_, "random subject (N)", {40, 74, 108, 255}, {227, 235, 241, 255});
     drawButton(topEnergyButton_, "top energy (F)", {54, 98, 84, 255}, {227, 235, 241, 255});
     drawButton(dominantLineageButton_, "dominant lineage (L)", {79, 70, 126, 255}, {232, 231, 244, 255});
     drawButton(newestLineageButton_, "newest branch (B)", {120, 76, 54, 255}, {244, 235, 227, 255});
+    drawButton(overlayButton_, "habitat overlay: " + std::string(debugOverlayLabel()) + " (V)", {48, 90, 102, 255}, {228, 238, 242, 255});
 
     SDL_RenderPresent(renderer_);
 }

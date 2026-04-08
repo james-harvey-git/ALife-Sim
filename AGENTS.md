@@ -48,11 +48,13 @@ The long-term goal is not a scripted predator/prey toy. The goal is a watchable,
 - Toroidal world with a depletable substrate nutrient reservoir, current field, reef substrate, blooms, and carrion.
 - Sparse topology-evolving controller with innovation-aware structural mutations, bucketed sensory inputs, and recurrent memory channels.
 - Reef habitat modulates local flow, nutrient growth, and contact physics, and creatures now observe substrate proximity plus local shear.
+- Reef wakes now create lee-shelter niches downstream of structures, and creatures observe shelter as well as substrate proximity/contact and shear.
 - Grazers and blooms now compete over the same nutrient substrate, and reproduction is modulated by recent foraging success instead of only stored energy.
 - Branching lineage tracking for major brain-topology divergences so structural novelty can be observed as clades instead of anonymous drift.
-- Native inspection HUD with history graphs, ecology drift, lineage telemetry, a live brain-topology overlay, and selection readouts including slip/curvature-style body metrics.
+- Native inspection HUD with history graphs, ecology drift, lineage telemetry, a live brain-topology overlay, a scrollable selection inspector, and selection readouts including slip/curvature-style body metrics.
 - The app now boots with a subject selected, and the HUD exposes explicit observer picks (`random subject`, `top energy`, `dominant lineage`, `newest branch`) to support QA and watchability.
 - Observer selection is lineage-aware: when a watched creature dies, the sim should try to stay on that clade instead of immediately jumping to an unrelated organism.
+- The renderer also has habitat overlay modes (`V`) for visual QA of nutrient, lee-shelter, and shear fields.
 
 ## Important Design Rule
 

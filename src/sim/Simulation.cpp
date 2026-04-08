@@ -173,6 +173,7 @@ std::size_t nutrientIndex(int x, int y) {
 struct HabitatSample {
     float proximity = 0.0f;
     float contact = 0.0f;
+    float shelter = 0.0f;
     float nutrientBoost = 0.0f;
     float shear = 0.0f;
     Vec2 currentOffset {};
@@ -181,6 +182,7 @@ struct HabitatSample {
 HabitatSample sampleHabitatField(
     float x,
     float y,
+    float timeSeconds,
     const std::vector<Reef>& reefs,
     float worldWidth,
     float worldHeight
@@ -212,6 +214,22 @@ HabitatSample sampleHabitatField(
         sample.currentOffset = sample.currentOffset
             + tangential * ((1.5f + reef.shear * 4.5f) * edge * halo)
             - radial * ((1.5f + reef.roughness * 3.0f) * contact);
+
+        const Vec2 reefFlow = sampleCurrentField(reef.position.x, reef.position.y, timeSeconds);
+        if (lengthSquared(reefFlow) > 1e-4f) {
+            const Vec2 flowDir = normalize(reefFlow);
+            const float downstream = dot(delta, flowDir);
+            const float lateral = std::abs(cross(delta, flowDir));
+            if (downstream > 0.0f) {
+                const float wakeLength = reef.radius * (2.1f + reef.shear * 0.9f);
+                const float wakeWidth = reef.radius * (0.7f + reef.roughness * 0.28f);
+                const float lee = clamp01(1.0f - downstream / wakeLength)
+                    * clamp01(1.0f - lateral / wakeWidth);
+                sample.shelter = std::max(sample.shelter, lee);
+                sample.nutrientBoost += lee * (0.035f + reef.nutrientBoost * 0.085f);
+                sample.currentOffset = sample.currentOffset - flowDir * (length(reefFlow) * lee * 0.52f);
+            }
+        }
     }
 
     sample.nutrientBoost = clamp01(sample.nutrientBoost);
@@ -226,7 +244,7 @@ float sampleNutrientWithReefs(
     float worldWidth,
     float worldHeight
 ) {
-    const HabitatSample habitat = sampleHabitatField(x, y, reefs, worldWidth, worldHeight);
+    const HabitatSample habitat = sampleHabitatField(x, y, timeSeconds, reefs, worldWidth, worldHeight);
     const float base = sampleNutrientField(x, y, timeSeconds);
     return clamp01(base * (1.0f - habitat.contact * 0.35f) + habitat.nutrientBoost);
 }
@@ -432,7 +450,7 @@ Vec2 sampleCurrentWithReefs(
     float worldWidth,
     float worldHeight
 ) {
-    const HabitatSample habitat = sampleHabitatField(x, y, reefs, worldWidth, worldHeight);
+    const HabitatSample habitat = sampleHabitatField(x, y, timeSeconds, reefs, worldWidth, worldHeight);
     const Vec2 base = sampleCurrentField(x, y, timeSeconds);
     const float slowdown = 1.0f - habitat.contact * (0.22f + habitat.proximity * 0.08f);
     return base * slowdown + habitat.currentOffset;
@@ -452,7 +470,7 @@ float sampleLocalShear(
     const Vec2 behind = sampleCurrentWithReefs(wrapAxis(x - probe, worldWidth), y, timeSeconds, reefs, worldWidth, worldHeight);
     const Vec2 above = sampleCurrentWithReefs(x, wrapAxis(y + probe, worldHeight), timeSeconds, reefs, worldWidth, worldHeight);
     const Vec2 below = sampleCurrentWithReefs(x, wrapAxis(y - probe, worldHeight), timeSeconds, reefs, worldWidth, worldHeight);
-    const HabitatSample habitat = sampleHabitatField(x, y, reefs, worldWidth, worldHeight);
+    const HabitatSample habitat = sampleHabitatField(x, y, timeSeconds, reefs, worldWidth, worldHeight);
     const float gradient = length(ahead - behind) + length(above - below);
     return clamp01(gradient / (88.0f + probe * 0.28f) + habitat.shear * 0.12f);
 }
@@ -1020,6 +1038,7 @@ Genome makeAncestorGenome(
 
     appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 10, NodeKind::Hidden, 0, 2.4f);
     appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 29, NodeKind::Hidden, 0, 1.0f);
+    appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 33, NodeKind::Hidden, 0, 0.95f);
     genome.brain.hiddenBias[0] = -0.15f;
 
     appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Input, 0, NodeKind::Hidden, 1, 1.7f);
@@ -1855,6 +1874,19 @@ Vec2 Simulation::sampleCurrent(float x, float y) const {
     );
 }
 
+EnvironmentProbe Simulation::probeEnvironment(float x, float y) const {
+    const float wrappedX = wrapAxis(x, worldWidth_);
+    const float wrappedY = wrapAxis(y, worldHeight_);
+    const HabitatSample habitat = sampleHabitatField(wrappedX, wrappedY, timeSeconds_, reefs_, worldWidth_, worldHeight_);
+    return EnvironmentProbe {
+        .nutrient = sampleNutrientGridNormalized(nutrientGrid_, wrappedX, wrappedY, worldWidth_, worldHeight_),
+        .current = sampleCurrentWithReefs(wrappedX, wrappedY, timeSeconds_, reefs_, worldWidth_, worldHeight_),
+        .substrate = std::max(habitat.proximity, habitat.contact),
+        .shelter = habitat.shelter,
+        .shear = sampleLocalShear(wrappedX, wrappedY, 42.0f, timeSeconds_, reefs_, worldWidth_, worldHeight_)
+    };
+}
+
 std::optional<std::uint64_t> Simulation::creatureAt(float worldX, float worldY, float radius) const {
     std::optional<std::uint64_t> bestId;
     float bestDistanceSq = radius * radius;
@@ -1918,6 +1950,7 @@ SelectionInfo Simulation::selectionInfo() const {
     info.flowAlignment = it->flowAlignment;
     info.substrateProximity = it->substrateProximity;
     info.substrateContact = it->substrateContact;
+    info.substrateShelter = it->substrateShelter;
     info.localShear = it->localShear;
     info.lineageId = it->lineageId;
     info.lineageDepth = it->lineageDepth;
@@ -2083,12 +2116,14 @@ void Simulation::step(float dt) {
         const HabitatSample habitat = sampleHabitatField(
             creature.position.x,
             creature.position.y,
+            timeSeconds_,
             reefs_,
             worldWidth_,
             worldHeight_
         );
         creature.substrateProximity = std::max(habitat.proximity, habitat.contact);
         creature.substrateContact = habitat.contact;
+        creature.substrateShelter = habitat.shelter;
         creature.localShear = sampleLocalShear(
             creature.position.x,
             creature.position.y,
@@ -2107,6 +2142,7 @@ void Simulation::step(float dt) {
         inputs[kSensorBuckets * kSensorChannels + 5] = 0.5f + 0.5f * dot(normalize(current), forward);
         inputs[kSensorBuckets * kSensorChannels + 6] = creature.substrateProximity;
         inputs[kSensorBuckets * kSensorChannels + 7] = creature.localShear;
+        inputs[kSensorBuckets * kSensorChannels + 8] = creature.substrateShelter;
 
         creature.lastInputs = inputs;
         forwardBrain(creature.genome, creature, inputs);
@@ -2308,12 +2344,14 @@ void Simulation::step(float dt) {
         const HabitatSample habitat = sampleHabitatField(
             creatures_[index].position.x,
             creatures_[index].position.y,
+            timeSeconds_,
             reefs_,
             worldWidth_,
             worldHeight_
         );
         creatures_[index].substrateProximity = std::max(habitat.proximity, habitat.contact);
         creatures_[index].substrateContact = std::max(creatures_[index].substrateContact, habitat.contact);
+        creatures_[index].substrateShelter = habitat.shelter;
         creatures_[index].localShear = sampleLocalShear(
             creatures_[index].position.x,
             creatures_[index].position.y,
@@ -2618,6 +2656,7 @@ void Simulation::step(float dt) {
     stats_.avgBrainComplexity = 0.0f;
     stats_.avgBrainConnections = 0.0f;
     stats_.avgSubstrateContact = 0.0f;
+    stats_.avgSubstrateShelter = 0.0f;
     stats_.avgLocalShear = 0.0f;
     stats_.activeLineages = 0;
     stats_.dominantLineageShare = 0.0f;
@@ -2635,6 +2674,7 @@ void Simulation::step(float dt) {
         stats_.avgBrainComplexity += brainComplexityScore(creature.genome.brain);
         stats_.avgBrainConnections += static_cast<float>(creature.genome.brain.connectionCount);
         stats_.avgSubstrateContact += creature.substrateContact;
+        stats_.avgSubstrateShelter += creature.substrateShelter;
         stats_.avgLocalShear += creature.localShear;
 
         if (LineageRecord* lineage = findLineage(lineages_, creature.lineageId)) {
@@ -2665,6 +2705,7 @@ void Simulation::step(float dt) {
     stats_.avgBrainComplexity /= divisor;
     stats_.avgBrainConnections /= divisor;
     stats_.avgSubstrateContact /= divisor;
+    stats_.avgSubstrateShelter /= divisor;
     stats_.avgLocalShear /= divisor;
 
     std::size_t dominantLineagePopulation = 0;
@@ -2694,6 +2735,7 @@ void Simulation::step(float dt) {
             .avgMass = stats_.avgMass,
             .avgBrainComplexity = stats_.avgBrainComplexity,
             .avgSubstrateContact = stats_.avgSubstrateContact,
+            .avgSubstrateShelter = stats_.avgSubstrateShelter,
             .grazers = stats_.grazers,
             .omnivores = stats_.omnivores,
             .hunters = stats_.hunters,

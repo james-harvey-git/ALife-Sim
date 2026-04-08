@@ -12,6 +12,7 @@ This repository is a fresh start from the older predator/prey project. Instead o
 - Segmented procedural sprite rendering tied directly to evolved body traits
 - Articulated body chains that lag, bend, and couple to local flow
 - Reef-like substrate structures that create shelter, edge shear, and nutrient pockets
+- Reef wakes now create lee-shelter niches that reduce local flow behind structures
 - Depletable substrate nutrients that blooms and grazers compete over
 - Native SDL2 runtime so we can push simulation complexity without browser overhead
 
@@ -36,13 +37,15 @@ The first playable milestone in this repo includes:
 
 - toroidal water world with bloom patches and a depletable substrate nutrient reservoir
 - current field plus reef substrate that reshape local flow and nutrient availability
+- reef wakes that accumulate sheltered nutrient pockets downstream of structures
 - sparse topology-evolving controllers with innovation-aware structural mutations and recurrent memory inputs
 - segmented phenotypes with articulated body chains, flow-coupled lag, and body-part collision envelopes
-- reef-aware observations including substrate proximity and local shear
+- reef-aware observations including substrate proximity, lee shelter, and local shear
 - grazing, carrion feeding, and live predation
 - reproduction with mutation from a single ancestor genome, tempered by recent foraging success
 - branching lineage tracking for major brain-topology divergences
 - native HUD with history graphs, ecology drift readouts, lineage telemetry, live brain topology overlay, and lineage-aware observer controls
+- scrollable selection inspector plus habitat-field overlay modes for QA and debugging
 
 This is intentionally still an early foundation. The long-term plan is to grow from these articulated soft-body approximations toward richer jointed morphologies, stronger environmental physics, and deeper lineage/ecology observability. The reef habitat system is the first pass at structured substrate physics and still needs balance work across long-run seeds.
 
@@ -58,6 +61,10 @@ This is intentionally still an early foundation. The long-term plan is to grow f
 - `L`: select a representative from the dominant lineage
 - `B`: select a representative from the newest active branch
 - `C`: clear selection
+- `V`: cycle habitat overlay (`off`, `nutrient`, `lee shelter`, `shear`)
+- `[` / `PageUp`: scroll the selection inspector upward
+- `]` / `PageDown`: scroll the selection inspector downward
+- `Mouse Wheel` over the selection card: scroll the selection inspector
 - `Left Click`: select the nearest creature in the sim view
 - `Esc`: quit
 

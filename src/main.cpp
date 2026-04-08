@@ -74,6 +74,7 @@ int main(int argc, char** argv) {
             << " max_energy=" << maxEnergy
             << " avg_brain_load=" << stats.avgBrainComplexity
             << " avg_contact=" << stats.avgSubstrateContact
+            << " avg_shelter=" << stats.avgSubstrateShelter
             << " avg_shear=" << stats.avgLocalShear
             << " feed_ambient=" << stats.energyFromAmbientGrazing
             << " feed_bloom=" << stats.energyFromBloomHarvest
@@ -144,6 +145,17 @@ int main(int argc, char** argv) {
                         case SDLK_b:
                             simulation.selectNewestLineageCreature();
                             break;
+                        case SDLK_v:
+                            renderer.cycleDebugOverlay();
+                            break;
+                        case SDLK_LEFTBRACKET:
+                        case SDLK_PAGEUP:
+                            renderer.scrollSelection(-72.0f);
+                            break;
+                        case SDLK_RIGHTBRACKET:
+                        case SDLK_PAGEDOWN:
+                            renderer.scrollSelection(72.0f);
+                            break;
                         default:
                             break;
                     }
@@ -167,6 +179,10 @@ int main(int argc, char** argv) {
                             simulation.selectNewestLineageCreature();
                             break;
                         }
+                        if (uiAction == alife::Renderer::UiAction::CycleOverlay) {
+                            renderer.cycleDebugOverlay();
+                            break;
+                        }
                     }
 
                     if (event.button.button == SDL_BUTTON_LEFT
@@ -182,6 +198,15 @@ int main(int argc, char** argv) {
                         }
                     }
                     break;
+                case SDL_MOUSEWHEEL: {
+                    int mouseX = 0;
+                    int mouseY = 0;
+                    SDL_GetMouseState(&mouseX, &mouseY);
+                    if (renderer.screenPointInSelection(mouseX, mouseY)) {
+                        renderer.scrollSelection(static_cast<float>(-event.wheel.y) * 24.0f);
+                    }
+                    break;
+                }
                 default:
                     break;
             }
