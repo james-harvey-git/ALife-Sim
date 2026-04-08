@@ -44,8 +44,9 @@ The long-term goal is not a scripted predator/prey toy. The goal is a watchable,
 - Continuous grazer/scavenger/hunter tradeoffs.
 - Articulated segmented body chains with persistent per-segment state, flow-coupled lag, and segment-aware collisions.
 - Morphology-derived thrust, drag, turning, bite reach, sensing, upkeep, and reproduction thresholds.
-- Toroidal world with nutrient field, current field, blooms, and carrion.
+- Toroidal world with nutrient field, current field, reef substrate, blooms, and carrion.
 - Sparse topology-evolving controller with innovation-aware structural mutations, bucketed sensory inputs, and recurrent memory channels.
+- Reef habitat modulates local flow, nutrient growth, and contact physics, and creatures now observe substrate proximity plus local shear.
 - Branching lineage tracking for major brain-topology divergences so structural novelty can be observed as clades instead of anonymous drift.
 - Native inspection HUD with history graphs, ecology drift, lineage telemetry, a live brain-topology overlay, and selection readouts including slip/curvature-style body metrics.
 - The app now boots with a subject selected, and the HUD exposes explicit observer picks (`random subject`, `top energy`, `dominant lineage`, `newest branch`) to support QA and watchability.
@@ -69,6 +70,7 @@ These are especially aligned with the current direction:
 - Add more physically meaningful environmental structure such as substrate, shelter, shear, or obstacle interaction.
 - Add lineage and clade observability so long-term evolutionary structure is easier to inspect.
 - Introduce richer environmental physics instead of lots of ecology-specific hand tuning.
+- Balance the new reef habitat system across long-run seeds before layering on more habitat types.
 - Continue improving the right-side HUD and inspection tooling, borrowing the best ideas from the old sim.
 - Add camera controls, save/load, and deeper debug views once the core dynamics justify them.
 
@@ -117,4 +119,5 @@ Use multiple seeds when changing simulation dynamics.
 - Preserve the simulation/render separation.
 - Prefer physics/environment changes over proliferating arbitrary balance constants.
 - Keep hot-path changes mindful of performance.
+- Kill live `alife_sim` processes after visual QA passes.
 - Update `README.md` when the current milestone meaningfully changes.

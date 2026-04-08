@@ -18,7 +18,7 @@ struct Vec2 {
 
 constexpr int kSensorBuckets = 5;
 constexpr int kSensorChannels = 5;
-constexpr int kInternalInputs = 6;
+constexpr int kInternalInputs = 8;
 constexpr int kMemorySize = 4;
 constexpr int kBodySegments = 4;
 constexpr int kInputCount = kSensorBuckets * kSensorChannels + kInternalInputs;
@@ -137,6 +137,9 @@ struct Creature {
     float bodyCurvature = 0.0f;
     float bodySlip = 0.0f;
     float flowAlignment = 0.0f;
+    float substrateProximity = 0.0f;
+    float substrateContact = 0.0f;
+    float localShear = 0.0f;
     std::uint32_t lineageId = 0;
     std::uint8_t lineageDepth = 0;
     std::uint64_t parentId = 0;
@@ -164,10 +167,19 @@ struct Carrion {
     float decayRate = 5.0f;
 };
 
+struct Reef {
+    Vec2 position {};
+    float radius = 90.0f;
+    float roughness = 0.5f;
+    float nutrientBoost = 0.5f;
+    float shear = 0.5f;
+};
+
 struct Stats {
     std::size_t population = 0;
     std::size_t blooms = 0;
     std::size_t carrion = 0;
+    std::size_t reefs = 0;
     std::uint64_t births = 0;
     std::uint64_t deaths = 0;
     std::uint64_t extinctions = 0;
@@ -177,6 +189,8 @@ struct Stats {
     float avgSpeed = 0.0f;
     float avgBrainComplexity = 0.0f;
     float avgBrainConnections = 0.0f;
+    float avgSubstrateContact = 0.0f;
+    float avgLocalShear = 0.0f;
     float season = 0.0f;
     int grazers = 0;
     int omnivores = 0;
@@ -190,10 +204,12 @@ struct HistorySample {
     std::size_t population = 0;
     std::size_t blooms = 0;
     std::size_t carrion = 0;
+    std::size_t reefs = 0;
     float avgPlantAffinity = 0.0f;
     float avgMeatAffinity = 0.0f;
     float avgMass = 0.0f;
     float avgBrainComplexity = 0.0f;
+    float avgSubstrateContact = 0.0f;
     int grazers = 0;
     int omnivores = 0;
     int hunters = 0;
@@ -227,6 +243,9 @@ struct SelectionInfo {
     float bodyCurvature = 0.0f;
     float bodySlip = 0.0f;
     float flowAlignment = 0.0f;
+    float substrateProximity = 0.0f;
+    float substrateContact = 0.0f;
+    float localShear = 0.0f;
     std::uint32_t lineageId = 0;
     std::uint32_t lineageParentId = 0;
     std::size_t lineagePopulation = 0;
@@ -288,6 +307,7 @@ public:
     const std::vector<Creature>& creatures() const;
     const std::vector<Bloom>& blooms() const;
     const std::vector<Carrion>& carrion() const;
+    const std::vector<Reef>& reefs() const;
     const std::deque<HistorySample>& history() const;
     const Stats& stats() const;
 
@@ -317,6 +337,7 @@ private:
     std::vector<Creature> creatures_ {};
     std::vector<Bloom> blooms_ {};
     std::vector<Carrion> carrion_ {};
+    std::vector<Reef> reefs_ {};
     std::deque<HistorySample> history_ {};
     std::vector<InnovationRecord> innovations_ {};
     std::vector<LineageRecord> lineages_ {};

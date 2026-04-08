@@ -65,6 +65,7 @@ int main(int argc, char** argv) {
             << "smoke-test population=" << stats.population
             << " blooms=" << stats.blooms
             << " carrion=" << stats.carrion
+            << " reefs=" << stats.reefs
             << " births=" << stats.births
             << " deaths=" << stats.deaths
             << " lineages=" << stats.activeLineages
@@ -72,6 +73,8 @@ int main(int argc, char** argv) {
             << " avg_energy=" << averageEnergy
             << " max_energy=" << maxEnergy
             << " avg_brain_load=" << stats.avgBrainComplexity
+            << " avg_contact=" << stats.avgSubstrateContact
+            << " avg_shear=" << stats.avgLocalShear
             << " avg_repro_threshold=" << averageThreshold
             << '\n';
         return stats.population > 0 ? 0 : 1;

@@ -15,6 +15,7 @@ constexpr float kTau = 6.28318530717958647692f;
 constexpr std::size_t kInitialPopulation = 180;
 constexpr std::size_t kMaxPopulation = 900;
 constexpr std::size_t kTargetBlooms = 220;
+constexpr std::size_t kTargetReefs = 8;
 constexpr float kBloomRespawnChance = 1.75f;
 constexpr float kSpatialCellSize = 120.0f;
 constexpr std::uint32_t kInputNodeBase = 1;
@@ -148,6 +149,100 @@ Vec2 sampleCurrentField(float x, float y, float timeSeconds) {
 
 float seasonFactor(float timeSeconds) {
     return 0.7f + 0.3f * std::sin(timeSeconds * 0.045f);
+}
+
+struct HabitatSample {
+    float proximity = 0.0f;
+    float contact = 0.0f;
+    float nutrientBoost = 0.0f;
+    float shear = 0.0f;
+    Vec2 currentOffset {};
+};
+
+HabitatSample sampleHabitatField(
+    float x,
+    float y,
+    const std::vector<Reef>& reefs,
+    float worldWidth,
+    float worldHeight
+) {
+    HabitatSample sample {};
+    const Vec2 point {x, y};
+
+    for (const Reef& reef : reefs) {
+        const Vec2 delta = shortestWrappedDelta(reef.position, point, worldWidth, worldHeight);
+        const float haloRadius = reef.radius * (1.45f + reef.shear * 0.35f);
+        const float distSq = lengthSquared(delta);
+        if (distSq > haloRadius * haloRadius) {
+            continue;
+        }
+
+        const float dist = std::sqrt(std::max(distSq, 1e-4f));
+        const Vec2 radial = dist > 1e-4f ? delta / dist : Vec2 {1.0f, 0.0f};
+        const Vec2 tangential {-radial.y, radial.x};
+        const float contact = clamp01(1.0f - dist / std::max(reef.radius, 1.0f));
+        const float halo = clamp01(1.0f - dist / haloRadius);
+        const float edgeWidth = reef.radius * (0.45f + reef.roughness * 0.35f);
+        const float edge = clamp01(1.0f - std::abs(dist - reef.radius) / std::max(edgeWidth, 1.0f));
+
+        sample.proximity = std::max(sample.proximity, std::max(halo, contact));
+        sample.contact = std::max(sample.contact, contact);
+        sample.shear = std::max(sample.shear, clamp01(edge * (0.3f + reef.shear * 0.25f) + halo * 0.08f));
+        sample.nutrientBoost += edge * (0.12f + reef.nutrientBoost * 0.28f)
+            + contact * (0.04f + reef.nutrientBoost * 0.08f);
+        sample.currentOffset = sample.currentOffset
+            + tangential * ((1.5f + reef.shear * 4.5f) * edge * halo)
+            - radial * ((1.5f + reef.roughness * 3.0f) * contact);
+    }
+
+    sample.nutrientBoost = clamp01(sample.nutrientBoost);
+    return sample;
+}
+
+float sampleNutrientWithReefs(
+    float x,
+    float y,
+    float timeSeconds,
+    const std::vector<Reef>& reefs,
+    float worldWidth,
+    float worldHeight
+) {
+    const HabitatSample habitat = sampleHabitatField(x, y, reefs, worldWidth, worldHeight);
+    const float base = sampleNutrientField(x, y, timeSeconds);
+    return clamp01(base * (1.0f - habitat.contact * 0.35f) + habitat.nutrientBoost);
+}
+
+Vec2 sampleCurrentWithReefs(
+    float x,
+    float y,
+    float timeSeconds,
+    const std::vector<Reef>& reefs,
+    float worldWidth,
+    float worldHeight
+) {
+    const HabitatSample habitat = sampleHabitatField(x, y, reefs, worldWidth, worldHeight);
+    const Vec2 base = sampleCurrentField(x, y, timeSeconds);
+    const float slowdown = 1.0f - habitat.contact * (0.22f + habitat.proximity * 0.08f);
+    return base * slowdown + habitat.currentOffset;
+}
+
+float sampleLocalShear(
+    float x,
+    float y,
+    float probeDistance,
+    float timeSeconds,
+    const std::vector<Reef>& reefs,
+    float worldWidth,
+    float worldHeight
+) {
+    const float probe = std::max(18.0f, probeDistance);
+    const Vec2 ahead = sampleCurrentWithReefs(wrapAxis(x + probe, worldWidth), y, timeSeconds, reefs, worldWidth, worldHeight);
+    const Vec2 behind = sampleCurrentWithReefs(wrapAxis(x - probe, worldWidth), y, timeSeconds, reefs, worldWidth, worldHeight);
+    const Vec2 above = sampleCurrentWithReefs(x, wrapAxis(y + probe, worldHeight), timeSeconds, reefs, worldWidth, worldHeight);
+    const Vec2 below = sampleCurrentWithReefs(x, wrapAxis(y - probe, worldHeight), timeSeconds, reefs, worldWidth, worldHeight);
+    const HabitatSample habitat = sampleHabitatField(x, y, reefs, worldWidth, worldHeight);
+    const float gradient = length(ahead - behind) + length(above - below);
+    return clamp01(gradient / (88.0f + probe * 0.28f) + habitat.shear * 0.12f);
 }
 
 DietClass classifyDiet(const Genome& genome) {
@@ -988,7 +1083,13 @@ float segmentSpacingFor(const Creature& creature, int segmentIndex) {
     return creature.traits.segmentSpacing * lerp(0.92f, 1.18f, t);
 }
 
-void computeBodyObservables(Creature& creature, float worldWidth, float worldHeight, float timeSeconds) {
+void computeBodyObservables(
+    Creature& creature,
+    float worldWidth,
+    float worldHeight,
+    float timeSeconds,
+    const std::vector<Reef>& reefs
+) {
     float curvature = 0.0f;
     int curvatureCount = 0;
     for (int segmentIndex = 1; segmentIndex < kBodySegments - 1; ++segmentIndex) {
@@ -1020,10 +1121,13 @@ void computeBodyObservables(Creature& creature, float worldWidth, float worldHei
 
     Vec2 meanCurrent {};
     for (int segmentIndex = 0; segmentIndex < kBodySegments; ++segmentIndex) {
-        meanCurrent = meanCurrent + sampleCurrentField(
+        meanCurrent = meanCurrent + sampleCurrentWithReefs(
             creature.bodyPoints[segmentIndex].x,
             creature.bodyPoints[segmentIndex].y,
-            timeSeconds
+            timeSeconds,
+            reefs,
+            worldWidth,
+            worldHeight
         );
     }
     meanCurrent = meanCurrent / static_cast<float>(kBodySegments);
@@ -1034,7 +1138,7 @@ void computeBodyObservables(Creature& creature, float worldWidth, float worldHei
     }
 }
 
-void seedBodyPose(Creature& creature, float worldWidth, float worldHeight) {
+void seedBodyPose(Creature& creature, float worldWidth, float worldHeight, const std::vector<Reef>& reefs) {
     creature.bodyPoints[0] = creature.position;
 
     const float headRadius = creature.traits.minorRadius * lerp(0.86f, 1.12f, creature.genome.morphology.jawLength);
@@ -1058,7 +1162,7 @@ void seedBodyPose(Creature& creature, float worldWidth, float worldHeight) {
             t
         );
     }
-    computeBodyObservables(creature, worldWidth, worldHeight, 0.0f);
+    computeBodyObservables(creature, worldWidth, worldHeight, 0.0f, reefs);
 }
 
 void translateBody(Creature& creature, const Vec2& delta, float worldWidth, float worldHeight) {
@@ -1067,10 +1171,24 @@ void translateBody(Creature& creature, const Vec2& delta, float worldWidth, floa
     }
 }
 
-void integrateBodyChain(Creature& creature, float dt, float worldWidth, float worldHeight, float timeSeconds) {
+void integrateBodyChain(
+    Creature& creature,
+    float dt,
+    float worldWidth,
+    float worldHeight,
+    float timeSeconds,
+    const std::vector<Reef>& reefs
+) {
     const auto previousPoints = creature.bodyPoints;
     const auto previousVelocities = creature.bodyVelocities;
-    const Vec2 headCurrent = sampleCurrentField(creature.position.x, creature.position.y, timeSeconds);
+    const Vec2 headCurrent = sampleCurrentWithReefs(
+        creature.position.x,
+        creature.position.y,
+        timeSeconds,
+        reefs,
+        worldWidth,
+        worldHeight
+    );
     const Vec2 facing {std::cos(creature.angle), std::sin(creature.angle)};
     const Vec2 side {-facing.y, facing.x};
 
@@ -1083,10 +1201,13 @@ void integrateBodyChain(Creature& creature, float dt, float worldWidth, float wo
         const float sway = std::sin(creature.gaitPhase - t * 1.45f) * creature.traits.tailWaveAmplitude * lerp(0.2f, 1.0f, t);
         const Vec2 desiredDir = normalize(facing - side * sway);
         const Vec2 desiredPoint = creature.bodyPoints[segmentIndex - 1] - desiredDir * spacing;
-        const Vec2 currentAtSegment = sampleCurrentField(
+        const Vec2 currentAtSegment = sampleCurrentWithReefs(
             previousPoints[segmentIndex].x,
             previousPoints[segmentIndex].y,
-            timeSeconds
+            timeSeconds,
+            reefs,
+            worldWidth,
+            worldHeight
         );
         const Vec2 deltaToTarget = shortestWrappedDelta(previousPoints[segmentIndex], desiredPoint, worldWidth, worldHeight);
         const Vec2 spring = deltaToTarget * (7.5f + creature.genome.morphology.tailFlex * 8.0f);
@@ -1135,13 +1256,16 @@ void integrateBodyChain(Creature& creature, float dt, float worldWidth, float wo
         creature.bodyVelocities[segmentIndex] = displacement / std::max(dt, 1e-4f);
     }
 
-    const Vec2 tailCurrent = sampleCurrentField(
+    const Vec2 tailCurrent = sampleCurrentWithReefs(
         creature.bodyPoints[kBodySegments - 1].x,
         creature.bodyPoints[kBodySegments - 1].y,
-        timeSeconds
+        timeSeconds,
+        reefs,
+        worldWidth,
+        worldHeight
     );
     creature.angularVelocity += cross(facing, tailCurrent - headCurrent) * creature.traits.segmentSpacing * 0.00045f;
-    computeBodyObservables(creature, worldWidth, worldHeight, timeSeconds);
+    computeBodyObservables(creature, worldWidth, worldHeight, timeSeconds, reefs);
 }
 
 Vec2 mouthPosition(const Creature& creature) {
@@ -1153,6 +1277,7 @@ Creature makeCreature(
     std::mt19937_64& rng,
     std::uint64_t id,
     const Genome& genome,
+    const std::vector<Reef>& reefs,
     float worldWidth,
     float worldHeight,
     Vec2 position,
@@ -1182,7 +1307,7 @@ Creature makeCreature(
     creature.lineageDepth = lineageDepth;
     creature.parentId = parentId;
     creature.brainNovelty = brainNovelty;
-    seedBodyPose(creature, worldWidth, worldHeight);
+    seedBodyPose(creature, worldWidth, worldHeight, reefs);
     return creature;
 }
 
@@ -1232,6 +1357,7 @@ void Simulation::reset(std::uint64_t seed) {
     creatures_.clear();
     blooms_.clear();
     carrion_.clear();
+    reefs_.clear();
     history_.clear();
     innovations_.clear();
     lineages_.clear();
@@ -1253,6 +1379,34 @@ void Simulation::reset(std::uint64_t seed) {
         .avgBrainComplexity = brainComplexityScore(ancestorGenome_.brain)
     });
 
+    int reefAttempts = 0;
+    while (reefs_.size() < kTargetReefs && reefAttempts < static_cast<int>(kTargetReefs) * 24) {
+        ++reefAttempts;
+        Reef reef {};
+        reef.position = {
+            randomFloat(rng_, 0.0f, worldWidth_),
+            randomFloat(rng_, 0.0f, worldHeight_)
+        };
+        reef.radius = randomFloat(rng_, 68.0f, 138.0f);
+        reef.roughness = randomFloat(rng_, 0.25f, 1.0f);
+        reef.nutrientBoost = randomFloat(rng_, 0.45f, 1.0f);
+        reef.shear = randomFloat(rng_, 0.15f, 0.55f);
+
+        bool crowded = false;
+        for (const Reef& other : reefs_) {
+            const float minimumSpacing = reef.radius + other.radius * 0.72f;
+            if (lengthSquared(shortestWrappedDelta(other.position, reef.position, worldWidth_, worldHeight_))
+                < minimumSpacing * minimumSpacing) {
+                crowded = true;
+                break;
+            }
+        }
+
+        if (!crowded || randomFloat(rng_, 0.0f, 1.0f) < 0.14f) {
+            reefs_.push_back(reef);
+        }
+    }
+
     for (std::size_t index = 0; index < kInitialPopulation; ++index) {
         const Vec2 position {
             randomFloat(rng_, 0.0f, worldWidth_),
@@ -1262,6 +1416,7 @@ void Simulation::reset(std::uint64_t seed) {
             rng_,
             nextCreatureId_++,
             ancestorGenome_,
+            reefs_,
             worldWidth_,
             worldHeight_,
             position,
@@ -1445,6 +1600,10 @@ const std::vector<Carrion>& Simulation::carrion() const {
     return carrion_;
 }
 
+const std::vector<Reef>& Simulation::reefs() const {
+    return reefs_;
+}
+
 const std::deque<HistorySample>& Simulation::history() const {
     return history_;
 }
@@ -1466,11 +1625,25 @@ float Simulation::timeSeconds() const {
 }
 
 float Simulation::sampleNutrient(float x, float y) const {
-    return sampleNutrientField(wrapAxis(x, worldWidth_), wrapAxis(y, worldHeight_), timeSeconds_);
+    return sampleNutrientWithReefs(
+        wrapAxis(x, worldWidth_),
+        wrapAxis(y, worldHeight_),
+        timeSeconds_,
+        reefs_,
+        worldWidth_,
+        worldHeight_
+    );
 }
 
 Vec2 Simulation::sampleCurrent(float x, float y) const {
-    return sampleCurrentField(wrapAxis(x, worldWidth_), wrapAxis(y, worldHeight_), timeSeconds_);
+    return sampleCurrentWithReefs(
+        wrapAxis(x, worldWidth_),
+        wrapAxis(y, worldHeight_),
+        timeSeconds_,
+        reefs_,
+        worldWidth_,
+        worldHeight_
+    );
 }
 
 std::optional<std::uint64_t> Simulation::creatureAt(float worldX, float worldY, float radius) const {
@@ -1534,6 +1707,9 @@ SelectionInfo Simulation::selectionInfo() const {
     info.bodyCurvature = it->bodyCurvature;
     info.bodySlip = it->bodySlip;
     info.flowAlignment = it->flowAlignment;
+    info.substrateProximity = it->substrateProximity;
+    info.substrateContact = it->substrateContact;
+    info.localShear = it->localShear;
     info.lineageId = it->lineageId;
     info.lineageDepth = it->lineageDepth;
     info.brainNovelty = it->brainNovelty;
@@ -1694,6 +1870,24 @@ void Simulation::step(float dt) {
         const Vec2 current = sampleCurrent(creature.position.x, creature.position.y);
         const Vec2 forward {std::cos(creature.angle), std::sin(creature.angle)};
         const float speed = length(creature.velocity);
+        const HabitatSample habitat = sampleHabitatField(
+            creature.position.x,
+            creature.position.y,
+            reefs_,
+            worldWidth_,
+            worldHeight_
+        );
+        creature.substrateProximity = std::max(habitat.proximity, habitat.contact);
+        creature.substrateContact = habitat.contact;
+        creature.localShear = sampleLocalShear(
+            creature.position.x,
+            creature.position.y,
+            std::max(creature.traits.segmentSpacing * 1.6f, creature.traits.collisionRadius * 0.85f),
+            timeSeconds_,
+            reefs_,
+            worldWidth_,
+            worldHeight_
+        );
 
         inputs[kSensorBuckets * kSensorChannels + 0] = clamp01(creature.energy / creature.traits.reproductionThreshold);
         inputs[kSensorBuckets * kSensorChannels + 1] = clamp01(creature.health / creature.traits.maxHealth);
@@ -1701,6 +1895,8 @@ void Simulation::step(float dt) {
         inputs[kSensorBuckets * kSensorChannels + 3] = clamp01(speed / 120.0f);
         inputs[kSensorBuckets * kSensorChannels + 4] = sampleNutrient(creature.position.x, creature.position.y);
         inputs[kSensorBuckets * kSensorChannels + 5] = 0.5f + 0.5f * dot(normalize(current), forward);
+        inputs[kSensorBuckets * kSensorChannels + 6] = creature.substrateProximity;
+        inputs[kSensorBuckets * kSensorChannels + 7] = creature.localShear;
 
         creature.lastInputs = inputs;
         forwardBrain(creature.genome, creature, inputs);
@@ -1736,7 +1932,7 @@ void Simulation::step(float dt) {
         creature.age += dt;
         creature.cooldown = std::max(0.0f, creature.cooldown - dt);
 
-        integrateBodyChain(creature, dt, worldWidth_, worldHeight_, timeSeconds_);
+        integrateBodyChain(creature, dt, worldWidth_, worldHeight_, timeSeconds_, reefs_);
 
         const float movementCost = creature.traits.upkeep * dt
             * (0.65f + std::abs(thrustInput) * 0.55f + std::abs(turnInput) * 0.25f + creature.signal * 0.3f
@@ -1750,6 +1946,75 @@ void Simulation::step(float dt) {
             creature.health += creature.energy;
             creature.energy = 0.0f;
         }
+    }
+
+    std::vector<Vec2> reefPositionDelta(creatures_.size(), Vec2 {});
+    std::vector<Vec2> reefVelocityDelta(creatures_.size(), Vec2 {});
+    std::vector<float> reefContact(creatures_.size(), 0.0f);
+
+    for (std::size_t index = 0; index < creatures_.size(); ++index) {
+        Creature& creature = creatures_[index];
+        if (!creature.alive) {
+            continue;
+        }
+
+        Vec2 positionDelta {};
+        Vec2 velocityDelta {};
+        float contactAmount = 0.0f;
+
+        for (const Reef& reef : reefs_) {
+            float strongestOverlap = 0.0f;
+            Vec2 strongestNormal {1.0f, 0.0f};
+
+            for (int segmentIndex = 0; segmentIndex < kBodySegments; ++segmentIndex) {
+                const Vec2 delta = shortestWrappedDelta(reef.position, creature.bodyPoints[segmentIndex], worldWidth_, worldHeight_);
+                const float distSq = lengthSquared(delta);
+                const float minDistance = reef.radius + creature.bodyRadii[segmentIndex] * 0.7f;
+                if (distSq >= minDistance * minDistance) {
+                    continue;
+                }
+
+                const float dist = std::sqrt(std::max(distSq, 1e-4f));
+                const float overlap = minDistance - dist;
+                if (overlap > strongestOverlap) {
+                    strongestOverlap = overlap;
+                    strongestNormal = delta / dist;
+                }
+            }
+
+            if (strongestOverlap <= 0.0f) {
+                continue;
+            }
+
+            positionDelta = positionDelta + strongestNormal * (strongestOverlap * (0.36f + reef.roughness * 0.16f));
+            velocityDelta = velocityDelta + strongestNormal * (strongestOverlap * (0.45f + reef.roughness * 0.35f));
+            contactAmount = std::max(
+                contactAmount,
+                clamp01(strongestOverlap / (creature.traits.minorRadius * 0.8f + reef.radius * 0.06f + 1.0f))
+            );
+        }
+
+        reefPositionDelta[index] = positionDelta;
+        reefVelocityDelta[index] = velocityDelta;
+        reefContact[index] = contactAmount;
+    }
+
+    for (std::size_t index = 0; index < creatures_.size(); ++index) {
+        if (reefContact[index] <= 0.0f) {
+            continue;
+        }
+
+        Creature& creature = creatures_[index];
+        creature.position = wrapPosition(creature.position + reefPositionDelta[index], worldWidth_, worldHeight_);
+        translateBody(creature, reefPositionDelta[index], worldWidth_, worldHeight_);
+        const float damping = std::clamp(1.0f - reefContact[index] * 0.18f, 0.64f, 1.0f);
+        creature.velocity = (creature.velocity + reefVelocityDelta[index]) * damping;
+        creature.angularVelocity *= damping;
+        for (Vec2& velocity : creature.bodyVelocities) {
+            velocity = (velocity + reefVelocityDelta[index]) * damping;
+        }
+        creature.energy -= reefContact[index] * (0.1f + creature.traits.mass * 0.004f) * dt;
+        creature.substrateContact = std::max(creature.substrateContact, reefContact[index]);
     }
 
     hash.clear();
@@ -1828,7 +2093,25 @@ void Simulation::step(float dt) {
         for (Vec2& velocity : creatures_[index].bodyVelocities) {
             velocity = velocity + collisionVelocityDelta[index];
         }
-        computeBodyObservables(creatures_[index], worldWidth_, worldHeight_, timeSeconds_);
+        computeBodyObservables(creatures_[index], worldWidth_, worldHeight_, timeSeconds_, reefs_);
+        const HabitatSample habitat = sampleHabitatField(
+            creatures_[index].position.x,
+            creatures_[index].position.y,
+            reefs_,
+            worldWidth_,
+            worldHeight_
+        );
+        creatures_[index].substrateProximity = std::max(habitat.proximity, habitat.contact);
+        creatures_[index].substrateContact = std::max(creatures_[index].substrateContact, habitat.contact);
+        creatures_[index].localShear = sampleLocalShear(
+            creatures_[index].position.x,
+            creatures_[index].position.y,
+            std::max(creatures_[index].traits.segmentSpacing * 1.6f, creatures_[index].traits.collisionRadius * 0.85f),
+            timeSeconds_,
+            reefs_,
+            worldWidth_,
+            worldHeight_
+        );
     }
 
     std::vector<Creature> pendingSpawns;
@@ -2016,6 +2299,7 @@ void Simulation::step(float dt) {
                 rng_,
                 nextCreatureId_++,
                 childGenome,
+                reefs_,
                 worldWidth_,
                 worldHeight_,
                 creature.position + offset,
@@ -2078,6 +2362,7 @@ void Simulation::step(float dt) {
     stats_.population = creatures_.size();
     stats_.blooms = blooms_.size();
     stats_.carrion = carrion_.size();
+    stats_.reefs = reefs_.size();
     stats_.grazers = 0;
     stats_.omnivores = 0;
     stats_.hunters = 0;
@@ -2087,6 +2372,8 @@ void Simulation::step(float dt) {
     stats_.avgSpeed = 0.0f;
     stats_.avgBrainComplexity = 0.0f;
     stats_.avgBrainConnections = 0.0f;
+    stats_.avgSubstrateContact = 0.0f;
+    stats_.avgLocalShear = 0.0f;
     stats_.activeLineages = 0;
     stats_.dominantLineageShare = 0.0f;
 
@@ -2102,6 +2389,8 @@ void Simulation::step(float dt) {
         stats_.avgSpeed += length(creature.velocity);
         stats_.avgBrainComplexity += brainComplexityScore(creature.genome.brain);
         stats_.avgBrainConnections += static_cast<float>(creature.genome.brain.connectionCount);
+        stats_.avgSubstrateContact += creature.substrateContact;
+        stats_.avgLocalShear += creature.localShear;
 
         if (LineageRecord* lineage = findLineage(lineages_, creature.lineageId)) {
             ++lineage->currentPopulation;
@@ -2130,6 +2419,8 @@ void Simulation::step(float dt) {
     stats_.avgSpeed /= divisor;
     stats_.avgBrainComplexity /= divisor;
     stats_.avgBrainConnections /= divisor;
+    stats_.avgSubstrateContact /= divisor;
+    stats_.avgLocalShear /= divisor;
 
     std::size_t dominantLineagePopulation = 0;
     for (LineageRecord& lineage : lineages_) {
@@ -2152,10 +2443,12 @@ void Simulation::step(float dt) {
             .population = stats_.population,
             .blooms = stats_.blooms,
             .carrion = stats_.carrion,
+            .reefs = stats_.reefs,
             .avgPlantAffinity = stats_.avgPlantAffinity,
             .avgMeatAffinity = stats_.avgMeatAffinity,
             .avgMass = stats_.avgMass,
             .avgBrainComplexity = stats_.avgBrainComplexity,
+            .avgSubstrateContact = stats_.avgSubstrateContact,
             .grazers = stats_.grazers,
             .omnivores = stats_.omnivores,
             .hunters = stats_.hunters,

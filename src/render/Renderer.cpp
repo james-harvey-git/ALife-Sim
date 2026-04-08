@@ -365,6 +365,26 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         SDL_FreeSurface(surface);
     };
 
+    auto forEachWrappedWorldPoint = [&](const Vec2& worldPoint, float radiusPixels, auto drawFn) {
+        const SDL_FPoint base = worldToScreen(worldPoint);
+        constexpr std::array<float, 3> offsets { -1.0f, 0.0f, 1.0f };
+        for (float xOffset : offsets) {
+            for (float yOffset : offsets) {
+                const SDL_FPoint point {
+                    base.x + xOffset * worldViewport_.w,
+                    base.y + yOffset * worldViewport_.h
+                };
+                if (point.x + radiusPixels < worldViewport_.x
+                    || point.x - radiusPixels > worldViewport_.x + worldViewport_.w
+                    || point.y + radiusPixels < worldViewport_.y
+                    || point.y - radiusPixels > worldViewport_.y + worldViewport_.h) {
+                    continue;
+                }
+                drawFn(point);
+            }
+        }
+    };
+
     const Stats& stats = simulation.stats();
     const auto info = simulation.selectionInfo();
     const auto& history = simulation.history();
@@ -703,6 +723,33 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         }
     }
 
+    for (const Reef& reef : simulation.reefs()) {
+        const float radius = reef.radius * worldScale;
+        const SDL_Color halo = {73, 108, 120, static_cast<std::uint8_t>(28 + reef.shear * 22.0f)};
+        const SDL_Color body = {58, 74, 84, 214};
+        const SDL_Color ridge = {112, 143, 154, 124};
+        const SDL_Color moss = {74, 131, 114, static_cast<std::uint8_t>(54 + reef.nutrientBoost * 44.0f)};
+
+        forEachWrappedWorldPoint(reef.position, radius * 1.35f, [&](SDL_FPoint center) {
+            fillEllipse(renderer_, center.x, center.y, radius * 1.22f, radius * 1.12f, halo);
+            fillEllipse(renderer_, center.x, center.y, radius, radius * 0.92f, body);
+            fillEllipse(renderer_, center.x - radius * 0.12f, center.y - radius * 0.08f, radius * 0.52f, radius * 0.38f, ridge);
+            fillEllipse(renderer_, center.x + radius * 0.16f, center.y + radius * 0.1f, radius * 0.42f, radius * 0.28f, moss);
+            drawLine(
+                renderer_,
+                {center.x - radius * 0.54f, center.y - radius * 0.16f},
+                {center.x + radius * 0.44f, center.y + radius * 0.12f},
+                {136, 167, 178, 74}
+            );
+            drawLine(
+                renderer_,
+                {center.x - radius * 0.28f, center.y + radius * 0.26f},
+                {center.x + radius * 0.24f, center.y - radius * 0.3f},
+                {136, 167, 178, 62}
+            );
+        });
+    }
+
     for (const Bloom& bloom : simulation.blooms()) {
         const SDL_FPoint screen = worldToScreen(bloom.position);
         const float radius = 3.5f + bloom.energy / bloom.maxEnergy * 8.0f;
@@ -754,7 +801,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     drawText(font_, summaryCard.x + 110.0f, summaryCard.y + 58.0f, "blooms " + std::to_string(stats.blooms), {110, 227, 170, 255});
     drawText(font_, summaryCard.x + 235.0f, summaryCard.y + 58.0f, "carrion " + std::to_string(stats.carrion), {222, 141, 112, 255});
     drawText(smallFont_, summaryCard.x + 12.0f, summaryCard.y + 84.0f, "births " + std::to_string(stats.births) + "  deaths " + std::to_string(stats.deaths), {181, 194, 208, 255});
-    drawText(smallFont_, summaryCard.x + 220.0f, summaryCard.y + 84.0f, "season " + formatFloat(stats.season, 2), {181, 194, 208, 255});
+    drawText(smallFont_, summaryCard.x + 208.0f, summaryCard.y + 84.0f, "season " + formatFloat(stats.season, 2) + "  reefs " + std::to_string(stats.reefs), {181, 194, 208, 255});
     textY += summaryCard.h + 10.0f;
 
     const SDL_FRect populationCard {panel.x + 14.0f, textY, panel.w - 28.0f, 136.0f};
@@ -787,10 +834,11 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     drawSeries(roleGraph, [](const HistorySample& sample) { return static_cast<float>(sample.hunters); }, roleMax, {235, 146, 104, 255});
     drawText(smallFont_, ecologyCard.x + 12.0f, ecologyCard.y + 96.0f, "avg plant " + formatFloat(stats.avgPlantAffinity, 2), {125, 218, 139, 255});
     drawText(smallFont_, ecologyCard.x + 136.0f, ecologyCard.y + 96.0f, "avg meat " + formatFloat(stats.avgMeatAffinity, 2), {235, 146, 104, 255});
-    drawText(smallFont_, ecologyCard.x + 248.0f, ecologyCard.y + 96.0f, "avg mass " + formatFloat(stats.avgMass, 1), {202, 214, 226, 255});
-    drawText(smallFont_, ecologyCard.x + 12.0f, ecologyCard.y + 114.0f, "lineages " + std::to_string(stats.activeLineages), {158, 194, 240, 255});
-    drawText(smallFont_, ecologyCard.x + 136.0f, ecologyCard.y + 114.0f, "dominant " + formatFloat(stats.dominantLineageShare, 2), {206, 212, 220, 255});
-    drawText(smallFont_, ecologyCard.x + 252.0f, ecologyCard.y + 114.0f, "brain " + formatFloat(stats.avgBrainComplexity, 2), {184, 172, 236, 255});
+    drawText(smallFont_, ecologyCard.x + 252.0f, ecologyCard.y + 96.0f, "contact " + formatFloat(stats.avgSubstrateContact, 2), {156, 188, 198, 255});
+    drawText(smallFont_, ecologyCard.x + 12.0f, ecologyCard.y + 114.0f, "lin " + std::to_string(stats.activeLineages), {158, 194, 240, 255});
+    drawText(smallFont_, ecologyCard.x + 88.0f, ecologyCard.y + 114.0f, "dom " + formatFloat(stats.dominantLineageShare, 2), {206, 212, 220, 255});
+    drawText(smallFont_, ecologyCard.x + 176.0f, ecologyCard.y + 114.0f, "shear " + formatFloat(stats.avgLocalShear, 2), {128, 176, 212, 255});
+    drawText(smallFont_, ecologyCard.x + 272.0f, ecologyCard.y + 114.0f, "brain " + formatFloat(stats.avgBrainComplexity, 2), {184, 172, 236, 255});
     textY += ecologyCard.h + 10.0f;
 
     const SDL_FRect selectionCard {panel.x + 14.0f, textY, panel.w - 28.0f, panel.y + panel.h - textY - 96.0f};
@@ -825,6 +873,8 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "upkeep " + formatFloat(info.upkeep, 1) + "  repro " + formatFloat(info.reproductionThreshold, 1), {179, 194, 210, 255});
         sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "slip " + formatFloat(info.bodySlip, 2) + "  curve " + formatFloat(info.bodyCurvature, 2) + "  flow " + formatFloat(info.flowAlignment, 2), {179, 194, 210, 255});
+        sy += 18.0f;
+        drawText(smallFont_, selectionCard.x + 12.0f, sy, "reef " + formatFloat(info.substrateProximity, 2) + "  contact " + formatFloat(info.substrateContact, 2) + "  shear " + formatFloat(info.localShear, 2), {160, 194, 208, 255});
         sy += 18.0f;
         drawText(
             smallFont_,
@@ -882,8 +932,9 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     } else {
         drawText(font_, selectionCard.x + 12.0f, selectionCard.y + 40.0f, "click a creature to inspect it", {184, 192, 201, 255});
         drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 66.0f, "selection shows body physics, chain stress proxies,", {125, 139, 155, 255});
-        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 84.0f, "controller outputs, topology overlay, and sensor activity.", {125, 139, 155, 255});
-        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 108.0f, "observer picks can lock onto dominant or newly branched lineages.", {125, 139, 155, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 84.0f, "controller outputs, topology overlay, sensor activity,", {125, 139, 155, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 102.0f, "and reef/substrate contact metrics.", {125, 139, 155, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 126.0f, "observer picks can lock onto dominant or newly branched lineages.", {125, 139, 155, 255});
     }
 
     const SDL_FRect controlsCard {panel.x + 14.0f, panel.y + panel.h - 86.0f, panel.w - 28.0f, 86.0f};

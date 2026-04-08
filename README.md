@@ -11,6 +11,7 @@ This repository is a fresh start from the older predator/prey project. Instead o
 - Continuous grazing, scavenging, and hunting tradeoffs instead of discrete diets
 - Segmented procedural sprite rendering tied directly to evolved body traits
 - Articulated body chains that lag, bend, and couple to local flow
+- Reef-like substrate structures that create shelter, edge shear, and nutrient pockets
 - Native SDL2 runtime so we can push simulation complexity without browser overhead
 
 ## Physics-First Design
@@ -33,15 +34,16 @@ Those derived traits affect both gameplay and rendering. A long, finned body gli
 The first playable milestone in this repo includes:
 
 - toroidal water world with nutrient-driven bloom patches
-- current field that nudges body motion
+- current field plus reef substrate that reshape local flow and nutrient availability
 - sparse topology-evolving controllers with innovation-aware structural mutations and recurrent memory inputs
 - segmented phenotypes with articulated body chains, flow-coupled lag, and body-part collision envelopes
+- reef-aware observations including substrate proximity and local shear
 - grazing, carrion feeding, and live predation
 - reproduction with mutation from a single ancestor genome
 - branching lineage tracking for major brain-topology divergences
 - native HUD with history graphs, ecology drift readouts, lineage telemetry, live brain topology overlay, and lineage-aware observer controls
 
-This is intentionally still an early foundation. The long-term plan is to grow from these articulated soft-body approximations toward richer jointed morphologies, stronger environmental physics, and deeper lineage/ecology observability.
+This is intentionally still an early foundation. The long-term plan is to grow from these articulated soft-body approximations toward richer jointed morphologies, stronger environmental physics, and deeper lineage/ecology observability. The reef habitat system is the first pass at structured substrate physics and still needs balance work across long-run seeds.
 
 ## Controls
 
