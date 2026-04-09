@@ -1905,15 +1905,38 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         fillEllipse(renderer_, screen.x + radius * 0.3f, screen.y - radius * 0.2f, radius * 0.35f, radius * 0.26f, {229, 155, 118, 160});
     }
 
-    const std::uint64_t selectedId = simulation.selectedCreature();
-    for (const Creature& creature : simulation.creatures()) {
-        if (creature.id != selectedId) {
-            drawCreature(creature, false);
-        }
+    // --- SDF creature rendering ---
+    constexpr bool kUseSdfRenderer = true;
+    if (kUseSdfRenderer) {
+        // Flush accumulated batch geometry before switching GL state
+        flushColored(renderer_);
+
+        creatureSdf_.render(
+            simulation,
+            worldViewport_,
+            cameraZoom_,
+            cameraCenter_,
+            renderer_->drawableWidth,
+            renderer_->drawableHeight
+        );
+
+        // Restore batched geometry VAO after SDF rendering
+        glBindVertexArray(renderer_->colorVao);
+        glUseProgram(renderer_->colorProgram);
     }
-    for (const Creature& creature : simulation.creatures()) {
-        if (creature.id == selectedId) {
-            drawCreature(creature, true);
+
+    // --- Old geometry creature rendering (temporary fallback) ---
+    if (!kUseSdfRenderer) {
+        const std::uint64_t selectedId = simulation.selectedCreature();
+        for (const Creature& creature : simulation.creatures()) {
+            if (creature.id != selectedId) {
+                drawCreature(creature, false);
+            }
+        }
+        for (const Creature& creature : simulation.creatures()) {
+            if (creature.id == selectedId) {
+                drawCreature(creature, true);
+            }
         }
     }
     if (showBrainOverlay_) {
