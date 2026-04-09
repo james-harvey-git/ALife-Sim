@@ -837,7 +837,11 @@ bool Renderer::initialize() {
         smallFont_ = TTF_OpenFont(fontPath->c_str(), 13);
     }
 
-    creatureSdf_.initialize(ALIFE_SHADER_DIR);
+    if (!creatureSdf_.initialize(ALIFE_SHADER_DIR)) {
+        SDL_Log("CreatureSDF initialization failed");
+        shutdown();
+        return false;
+    }
 
     return true;
 }

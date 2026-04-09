@@ -1,11 +1,14 @@
 #include "render/CreatureSDF.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 
 #include <SDL2/SDL.h>
 
 namespace alife {
+
+CreatureSDF::~CreatureSDF() { shutdown(); }
 
 std::string CreatureSDF::readFile(const std::string& path) {
     std::ifstream file(path);
@@ -81,7 +84,7 @@ GLuint CreatureSDF::loadShaderProgram(const std::string& vertPath, const std::st
     return program;
 }
 
-void CreatureSDF::initialize(const std::string& shaderDir) {
+bool CreatureSDF::initialize(const std::string& shaderDir) {
     sdfProgram_ = loadShaderProgram(
         shaderDir + "/creature_sdf.vert",
         shaderDir + "/creature_sdf.frag");
@@ -90,7 +93,8 @@ void CreatureSDF::initialize(const std::string& shaderDir) {
         shaderDir + "/creature_dot.frag");
 
     if (sdfProgram_ == 0 || dotProgram_ == 0) {
-        SDL_Log("CreatureSDF: warning - one or more shader programs failed to load");
+        SDL_Log("CreatureSDF: one or more shader programs failed to load");
+        return false;
     }
 
     // Create unit quad VAO: triangle strip covering [0,1] range
@@ -127,6 +131,7 @@ void CreatureSDF::initialize(const std::string& shaderDir) {
     textureCapacity_ = 0;
 
     SDL_Log("CreatureSDF: initialized");
+    return true;
 }
 
 void CreatureSDF::shutdown() {
@@ -163,22 +168,20 @@ void CreatureSDF::shutdown() {
     SDL_Log("CreatureSDF: shut down");
 }
 
-void CreatureSDF::ensureTextureCapacity(int requiredFloats) {
-    if (requiredFloats <= textureCapacity_) {
+void CreatureSDF::ensureTextureCapacity(int creatureCount) {
+    if (creatureCount <= textureCapacity_) {
         return;
     }
 
     // Round up to next power-of-two-ish multiple for fewer reallocations
-    int newCapacity = std::max(requiredFloats, 1024);
+    int newCapacity = std::max(creatureCount, 1024);
     if (newCapacity < textureCapacity_ * 2) {
         newCapacity = textureCapacity_ * 2;
     }
 
+    GLsizeiptr bufferBytes = static_cast<GLsizeiptr>(newCapacity) * kDataStride * sizeof(float);
     glBindBuffer(GL_TEXTURE_BUFFER, dataBuffer_);
-    glBufferData(GL_TEXTURE_BUFFER,
-                 static_cast<GLsizeiptr>(newCapacity) * sizeof(float),
-                 nullptr,
-                 GL_STREAM_DRAW);
+    glBufferData(GL_TEXTURE_BUFFER, bufferBytes, nullptr, GL_STREAM_DRAW);
 
     glBindTexture(GL_TEXTURE_BUFFER, dataTexture_);
     glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, dataBuffer_);
@@ -198,7 +201,9 @@ void CreatureSDF::render(const Simulation& /*sim*/,
 void CreatureSDF::packAndClassify(const Simulation& /*sim*/,
                                   const SDL_FRect& /*worldViewport*/,
                                   float /*cameraZoom*/,
-                                  const Vec2& /*cameraCenter*/) {
+                                  const Vec2& /*cameraCenter*/,
+                                  int /*drawableWidth*/,
+                                  int /*drawableHeight*/) {
     // Stub: will be implemented in Task 2
 }
 

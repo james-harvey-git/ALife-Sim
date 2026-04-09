@@ -18,9 +18,9 @@ namespace alife {
 class CreatureSDF {
 public:
     CreatureSDF() = default;
-    ~CreatureSDF() = default;
+    ~CreatureSDF();
 
-    void initialize(const std::string& shaderDir);
+    bool initialize(const std::string& shaderDir);
     void shutdown();
     void render(const Simulation& sim,
                 const SDL_FRect& worldViewport,
@@ -52,17 +52,19 @@ private:
     int textureCapacity_ = 0;
 
     std::vector<float> packedData_;
-    std::vector<InstanceData> fullSdfInstances_;
-    std::vector<InstanceData> simpleSdfInstances_;
+    std::vector<InstanceData> fullInstances_;
+    std::vector<InstanceData> simpleInstances_;
     std::vector<InstanceData> dotInstances_;
 
     GLuint loadShaderProgram(const std::string& vertPath, const std::string& fragPath);
     std::string readFile(const std::string& path);
-    void ensureTextureCapacity(int requiredFloats);
+    void ensureTextureCapacity(int creatureCount);
     void packAndClassify(const Simulation& sim,
                          const SDL_FRect& worldViewport,
                          float cameraZoom,
-                         const Vec2& cameraCenter);
+                         const Vec2& cameraCenter,
+                         int drawableWidth,
+                         int drawableHeight);
 };
 
 }  // namespace alife
