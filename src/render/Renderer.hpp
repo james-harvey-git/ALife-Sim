@@ -9,6 +9,8 @@
 
 namespace alife {
 
+struct RendererState;
+
 class Renderer {
 public:
     enum class UiAction {
@@ -53,7 +55,7 @@ private:
     static constexpr int kMargin = 24;
 
     SDL_Window* window_ = nullptr;
-    SDL_Renderer* renderer_ = nullptr;
+    RendererState* renderer_ = nullptr;
     TTF_Font* titleFont_ = nullptr;
     TTF_Font* font_ = nullptr;
     TTF_Font* smallFont_ = nullptr;

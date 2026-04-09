@@ -16,6 +16,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 find_package(PkgConfig REQUIRED)
+find_package(OpenGL REQUIRED)
 pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
 pkg_check_modules(SDL2_TTF REQUIRED IMPORTED_TARGET SDL2_ttf)
 
@@ -27,12 +28,17 @@ add_executable(alife_sim
 
 target_include_directories(alife_sim PRIVATE src)
 target_link_libraries(alife_sim PRIVATE
+    OpenGL::GL
     PkgConfig::SDL2
     PkgConfig::SDL2_TTF
 )
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(alife_sim PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+if(APPLE)
+    target_compile_definitions(alife_sim PRIVATE GL_SILENCE_DEPRECATION)
 endif()
 
 if(BUILD_TESTING)

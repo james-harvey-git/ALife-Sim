@@ -1,8 +1,15 @@
 #include "render/Renderer.hpp"
 
+#if defined(__APPLE__)
+#include <OpenGL/gl3.h>
+#else
+#include <SDL2/SDL_opengl.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
@@ -11,6 +18,46 @@
 
 namespace alife {
 
+struct RendererState {
+    SDL_GLContext glContext = nullptr;
+    GLuint colorProgram = 0;
+    GLuint colorVao = 0;
+    GLuint colorVbo = 0;
+    GLuint colorEbo = 0;
+    GLint colorViewportLocation = -1;
+    GLuint textProgram = 0;
+    GLuint textVao = 0;
+    GLuint textVbo = 0;
+    GLuint textEbo = 0;
+    GLint textViewportLocation = -1;
+    GLint textSamplerLocation = -1;
+    int drawableWidth = 0;
+    int drawableHeight = 0;
+
+    struct ColorVertex {
+        float x;
+        float y;
+        float r;
+        float g;
+        float b;
+        float a;
+    };
+
+    struct TextVertex {
+        float x;
+        float y;
+        float u;
+        float v;
+        float r;
+        float g;
+        float b;
+        float a;
+    };
+
+    std::vector<ColorVertex> colorVertices;
+    std::vector<std::uint32_t> colorIndices;
+};
+
 namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
@@ -18,6 +65,7 @@ constexpr float kMinCameraZoom = 1.0f;
 constexpr float kMaxCameraZoom = 14.0f;
 constexpr float kDefaultCameraZoom = 6.5f;
 constexpr float kCameraFollowBlend = 0.2f;
+constexpr float kLineWidth = 1.2f;
 
 float clamp01(float value) {
     return std::clamp(value, 0.0f, 1.0f);
@@ -39,8 +87,16 @@ Vec2 operator*(const Vec2& value, float scale) {
     return {value.x * scale, value.y * scale};
 }
 
+Vec2 operator/(const Vec2& value, float scale) {
+    return {value.x / scale, value.y / scale};
+}
+
 float lengthSquared(const Vec2& value) {
     return value.x * value.x + value.y * value.y;
+}
+
+float length(const Vec2& value) {
+    return std::sqrt(lengthSquared(value));
 }
 
 Vec2 normalize(const Vec2& value) {
@@ -50,6 +106,12 @@ Vec2 normalize(const Vec2& value) {
     }
     const float invLen = 1.0f / std::sqrt(lenSq);
     return value * invLen;
+}
+
+Vec2 rotate(const Vec2& value, float radians) {
+    const float c = std::cos(radians);
+    const float s = std::sin(radians);
+    return {value.x * c - value.y * s, value.x * s + value.y * c};
 }
 
 float wrapAxis(float value, float extent) {
@@ -143,68 +205,384 @@ SDL_Color tint(SDL_Color color, float brightnessScale, std::uint8_t alpha = 255)
     return {scale(color.r), scale(color.g), scale(color.b), alpha};
 }
 
-void setColor(SDL_Renderer* renderer, SDL_Color color) {
-    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
-}
-
-void fillRect(SDL_Renderer* renderer, const SDL_FRect& rect, SDL_Color color) {
-    setColor(renderer, color);
-    SDL_RenderFillRectF(renderer, &rect);
-}
-
 bool pointInRect(int x, int y, const SDL_FRect& rect) {
     const float px = static_cast<float>(x);
     const float py = static_cast<float>(y);
     return px >= rect.x && px <= rect.x + rect.w && py >= rect.y && py <= rect.y + rect.h;
 }
 
-void drawTexturedFan(
-    SDL_Renderer* renderer,
-    const std::vector<SDL_Vertex>& vertices,
-    const std::vector<int>& indices
-) {
-    SDL_RenderGeometry(
-        renderer,
-        nullptr,
-        vertices.data(),
-        static_cast<int>(vertices.size()),
-        indices.data(),
-        static_cast<int>(indices.size())
-    );
+float toFloatChannel(std::uint8_t channel) {
+    return static_cast<float>(channel) / 255.0f;
 }
 
-void fillEllipse(SDL_Renderer* renderer, float cx, float cy, float rx, float ry, SDL_Color color) {
+RendererState::ColorVertex makeColorVertex(const SDL_FPoint& point, SDL_Color color) {
+    return {
+        point.x,
+        point.y,
+        toFloatChannel(color.r),
+        toFloatChannel(color.g),
+        toFloatChannel(color.b),
+        toFloatChannel(color.a)
+    };
+}
+
+GLuint compileShader(GLenum type, const char* source) {
+    const GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+
+    GLint success = GL_FALSE;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+    if (success == GL_TRUE) {
+        return shader;
+    }
+
+    GLint logLength = 0;
+    glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &logLength);
+    std::string log(static_cast<std::size_t>(std::max(0, logLength)), '\0');
+    if (logLength > 0) {
+        glGetShaderInfoLog(shader, logLength, nullptr, log.data());
+    }
+    SDL_Log("OpenGL shader compile failed: %s", log.c_str());
+    glDeleteShader(shader);
+    return 0;
+}
+
+GLuint linkProgram(const char* vertexSource, const char* fragmentSource) {
+    const GLuint vertexShader = compileShader(GL_VERTEX_SHADER, vertexSource);
+    const GLuint fragmentShader = compileShader(GL_FRAGMENT_SHADER, fragmentSource);
+    if (vertexShader == 0 || fragmentShader == 0) {
+        if (vertexShader != 0) {
+            glDeleteShader(vertexShader);
+        }
+        if (fragmentShader != 0) {
+            glDeleteShader(fragmentShader);
+        }
+        return 0;
+    }
+
+    const GLuint program = glCreateProgram();
+    glAttachShader(program, vertexShader);
+    glAttachShader(program, fragmentShader);
+    glLinkProgram(program);
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+
+    GLint success = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &success);
+    if (success == GL_TRUE) {
+        return program;
+    }
+
+    GLint logLength = 0;
+    glGetProgramiv(program, GL_INFO_LOG_LENGTH, &logLength);
+    std::string log(static_cast<std::size_t>(std::max(0, logLength)), '\0');
+    if (logLength > 0) {
+        glGetProgramInfoLog(program, logLength, nullptr, log.data());
+    }
+    SDL_Log("OpenGL program link failed: %s", log.c_str());
+    glDeleteProgram(program);
+    return 0;
+}
+
+bool initializeBackend(RendererState* renderer) {
+    constexpr const char* kColorVertexShader = R"glsl(
+        #version 150
+        in vec2 aPosition;
+        in vec4 aColor;
+        uniform vec2 uViewport;
+        out vec4 vColor;
+
+        void main() {
+            vec2 ndc = vec2(
+                (aPosition.x / uViewport.x) * 2.0 - 1.0,
+                1.0 - (aPosition.y / uViewport.y) * 2.0
+            );
+            gl_Position = vec4(ndc, 0.0, 1.0);
+            vColor = aColor;
+        }
+    )glsl";
+
+    constexpr const char* kColorFragmentShader = R"glsl(
+        #version 150
+        in vec4 vColor;
+        out vec4 fragColor;
+
+        void main() {
+            fragColor = vColor;
+        }
+    )glsl";
+
+    constexpr const char* kTextVertexShader = R"glsl(
+        #version 150
+        in vec2 aPosition;
+        in vec2 aTexCoord;
+        in vec4 aColor;
+        uniform vec2 uViewport;
+        out vec2 vTexCoord;
+        out vec4 vColor;
+
+        void main() {
+            vec2 ndc = vec2(
+                (aPosition.x / uViewport.x) * 2.0 - 1.0,
+                1.0 - (aPosition.y / uViewport.y) * 2.0
+            );
+            gl_Position = vec4(ndc, 0.0, 1.0);
+            vTexCoord = aTexCoord;
+            vColor = aColor;
+        }
+    )glsl";
+
+    constexpr const char* kTextFragmentShader = R"glsl(
+        #version 150
+        uniform sampler2D uTexture;
+        in vec2 vTexCoord;
+        in vec4 vColor;
+        out vec4 fragColor;
+
+        void main() {
+            fragColor = texture(uTexture, vTexCoord) * vColor;
+        }
+    )glsl";
+
+    renderer->colorProgram = linkProgram(kColorVertexShader, kColorFragmentShader);
+    renderer->textProgram = linkProgram(kTextVertexShader, kTextFragmentShader);
+    if (renderer->colorProgram == 0 || renderer->textProgram == 0) {
+        return false;
+    }
+
+    renderer->colorViewportLocation = glGetUniformLocation(renderer->colorProgram, "uViewport");
+    renderer->textViewportLocation = glGetUniformLocation(renderer->textProgram, "uViewport");
+    renderer->textSamplerLocation = glGetUniformLocation(renderer->textProgram, "uTexture");
+    const GLint colorPositionLocation = glGetAttribLocation(renderer->colorProgram, "aPosition");
+    const GLint colorVertexColorLocation = glGetAttribLocation(renderer->colorProgram, "aColor");
+    const GLint textPositionLocation = glGetAttribLocation(renderer->textProgram, "aPosition");
+    const GLint textUvLocation = glGetAttribLocation(renderer->textProgram, "aTexCoord");
+    const GLint textVertexColorLocation = glGetAttribLocation(renderer->textProgram, "aColor");
+    if (colorPositionLocation < 0 || colorVertexColorLocation < 0 || textPositionLocation < 0 || textUvLocation < 0
+        || textVertexColorLocation < 0) {
+        SDL_Log("OpenGL attribute lookup failed.");
+        return false;
+    }
+
+    glGenVertexArrays(1, &renderer->colorVao);
+    glGenBuffers(1, &renderer->colorVbo);
+    glGenBuffers(1, &renderer->colorEbo);
+    glBindVertexArray(renderer->colorVao);
+    glBindBuffer(GL_ARRAY_BUFFER, renderer->colorVbo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, renderer->colorEbo);
+    glEnableVertexAttribArray(static_cast<GLuint>(colorPositionLocation));
+    glVertexAttribPointer(
+        static_cast<GLuint>(colorPositionLocation),
+        2,
+        GL_FLOAT,
+        GL_FALSE,
+        sizeof(RendererState::ColorVertex),
+        reinterpret_cast<void*>(offsetof(RendererState::ColorVertex, x))
+    );
+    glEnableVertexAttribArray(static_cast<GLuint>(colorVertexColorLocation));
+    glVertexAttribPointer(
+        static_cast<GLuint>(colorVertexColorLocation),
+        4,
+        GL_FLOAT,
+        GL_FALSE,
+        sizeof(RendererState::ColorVertex),
+        reinterpret_cast<void*>(offsetof(RendererState::ColorVertex, r))
+    );
+
+    glGenVertexArrays(1, &renderer->textVao);
+    glGenBuffers(1, &renderer->textVbo);
+    glGenBuffers(1, &renderer->textEbo);
+    glBindVertexArray(renderer->textVao);
+    glBindBuffer(GL_ARRAY_BUFFER, renderer->textVbo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, renderer->textEbo);
+    glEnableVertexAttribArray(static_cast<GLuint>(textPositionLocation));
+    glVertexAttribPointer(
+        static_cast<GLuint>(textPositionLocation),
+        2,
+        GL_FLOAT,
+        GL_FALSE,
+        sizeof(RendererState::TextVertex),
+        reinterpret_cast<void*>(offsetof(RendererState::TextVertex, x))
+    );
+    glEnableVertexAttribArray(static_cast<GLuint>(textUvLocation));
+    glVertexAttribPointer(
+        static_cast<GLuint>(textUvLocation),
+        2,
+        GL_FLOAT,
+        GL_FALSE,
+        sizeof(RendererState::TextVertex),
+        reinterpret_cast<void*>(offsetof(RendererState::TextVertex, u))
+    );
+    glEnableVertexAttribArray(static_cast<GLuint>(textVertexColorLocation));
+    glVertexAttribPointer(
+        static_cast<GLuint>(textVertexColorLocation),
+        4,
+        GL_FLOAT,
+        GL_FALSE,
+        sizeof(RendererState::TextVertex),
+        reinterpret_cast<void*>(offsetof(RendererState::TextVertex, r))
+    );
+
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+    return true;
+}
+
+void destroyBackend(RendererState* renderer) {
+    if (renderer == nullptr) {
+        return;
+    }
+
+    if (renderer->colorProgram != 0) {
+        glDeleteProgram(renderer->colorProgram);
+        renderer->colorProgram = 0;
+    }
+    if (renderer->textProgram != 0) {
+        glDeleteProgram(renderer->textProgram);
+        renderer->textProgram = 0;
+    }
+    if (renderer->colorVbo != 0) {
+        glDeleteBuffers(1, &renderer->colorVbo);
+        renderer->colorVbo = 0;
+    }
+    if (renderer->colorEbo != 0) {
+        glDeleteBuffers(1, &renderer->colorEbo);
+        renderer->colorEbo = 0;
+    }
+    if (renderer->colorVao != 0) {
+        glDeleteVertexArrays(1, &renderer->colorVao);
+        renderer->colorVao = 0;
+    }
+    if (renderer->textVbo != 0) {
+        glDeleteBuffers(1, &renderer->textVbo);
+        renderer->textVbo = 0;
+    }
+    if (renderer->textEbo != 0) {
+        glDeleteBuffers(1, &renderer->textEbo);
+        renderer->textEbo = 0;
+    }
+    if (renderer->textVao != 0) {
+        glDeleteVertexArrays(1, &renderer->textVao);
+        renderer->textVao = 0;
+    }
+}
+
+void beginFrame(RendererState* renderer, SDL_Window* window) {
+    SDL_GL_MakeCurrent(window, renderer->glContext);
+    SDL_GL_GetDrawableSize(window, &renderer->drawableWidth, &renderer->drawableHeight);
+    glViewport(0, 0, renderer->drawableWidth, renderer->drawableHeight);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_SCISSOR_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glClearColor(11.0f / 255.0f, 14.0f / 255.0f, 20.0f / 255.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    renderer->colorVertices.clear();
+    renderer->colorIndices.clear();
+}
+
+void flushColored(RendererState* renderer) {
+    if (renderer == nullptr || renderer->colorIndices.empty()) {
+        return;
+    }
+
+    glUseProgram(renderer->colorProgram);
+    glUniform2f(renderer->colorViewportLocation, static_cast<float>(renderer->drawableWidth), static_cast<float>(renderer->drawableHeight));
+    glBindVertexArray(renderer->colorVao);
+    glBindBuffer(GL_ARRAY_BUFFER, renderer->colorVbo);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(renderer->colorVertices.size() * sizeof(RendererState::ColorVertex)),
+        renderer->colorVertices.data(),
+        GL_DYNAMIC_DRAW
+    );
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, renderer->colorEbo);
+    glBufferData(
+        GL_ELEMENT_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(renderer->colorIndices.size() * sizeof(std::uint32_t)),
+        renderer->colorIndices.data(),
+        GL_DYNAMIC_DRAW
+    );
+    glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(renderer->colorIndices.size()), GL_UNSIGNED_INT, nullptr);
+    glBindVertexArray(0);
+    renderer->colorVertices.clear();
+    renderer->colorIndices.clear();
+}
+
+void setClipRect(RendererState* renderer, const SDL_Rect* rect) {
+    flushColored(renderer);
+    if (rect == nullptr) {
+        glDisable(GL_SCISSOR_TEST);
+        return;
+    }
+
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(rect->x, renderer->drawableHeight - (rect->y + rect->h), rect->w, rect->h);
+}
+
+void appendColoredGeometry(
+    RendererState* renderer,
+    const std::vector<SDL_FPoint>& vertices,
+    const std::vector<std::uint32_t>& indices,
+    SDL_Color color
+) {
+    if (renderer == nullptr || vertices.empty() || indices.empty()) {
+        return;
+    }
+
+    const std::uint32_t baseIndex = static_cast<std::uint32_t>(renderer->colorVertices.size());
+    renderer->colorVertices.reserve(renderer->colorVertices.size() + vertices.size());
+    renderer->colorIndices.reserve(renderer->colorIndices.size() + indices.size());
+    for (const SDL_FPoint& point : vertices) {
+        renderer->colorVertices.push_back(makeColorVertex(point, color));
+    }
+    for (std::uint32_t index : indices) {
+        renderer->colorIndices.push_back(baseIndex + index);
+    }
+}
+
+void fillRect(RendererState* renderer, const SDL_FRect& rect, SDL_Color color) {
+    const std::vector<SDL_FPoint> vertices {
+        {rect.x, rect.y},
+        {rect.x + rect.w, rect.y},
+        {rect.x + rect.w, rect.y + rect.h},
+        {rect.x, rect.y + rect.h}
+    };
+    const std::vector<std::uint32_t> indices {0, 1, 2, 0, 2, 3};
+    appendColoredGeometry(renderer, vertices, indices, color);
+}
+
+void fillEllipse(RendererState* renderer, float cx, float cy, float rx, float ry, SDL_Color color) {
     constexpr int kSegments = 28;
-    std::vector<SDL_Vertex> vertices;
-    std::vector<int> indices;
+    std::vector<SDL_FPoint> vertices;
+    std::vector<std::uint32_t> indices;
     vertices.reserve(kSegments + 2);
     indices.reserve(kSegments * 3);
 
-    vertices.push_back({{cx, cy}, color, {0.0f, 0.0f}});
+    vertices.push_back({cx, cy});
     for (int index = 0; index <= kSegments; ++index) {
         const float angle = static_cast<float>(index) / static_cast<float>(kSegments) * kPi * 2.0f;
-        vertices.push_back({{cx + std::cos(angle) * rx, cy + std::sin(angle) * ry}, color, {0.0f, 0.0f}});
+        vertices.push_back({cx + std::cos(angle) * rx, cy + std::sin(angle) * ry});
         if (index > 0) {
             indices.push_back(0);
-            indices.push_back(index);
-            indices.push_back(index + 1);
+            indices.push_back(static_cast<std::uint32_t>(index));
+            indices.push_back(static_cast<std::uint32_t>(index + 1));
         }
     }
 
-    drawTexturedFan(renderer, vertices, indices);
+    appendColoredGeometry(renderer, vertices, indices, color);
 }
 
-void fillTriangle(SDL_Renderer* renderer, SDL_FPoint a, SDL_FPoint b, SDL_FPoint c, SDL_Color color) {
-    const std::array<SDL_Vertex, 3> vertices {{
-        {a, color, {0.0f, 0.0f}},
-        {b, color, {0.0f, 0.0f}},
-        {c, color, {0.0f, 0.0f}}
-    }};
-    const std::array<int, 3> indices {0, 1, 2};
-    SDL_RenderGeometry(renderer, nullptr, vertices.data(), 3, indices.data(), 3);
+void fillTriangle(RendererState* renderer, SDL_FPoint a, SDL_FPoint b, SDL_FPoint c, SDL_Color color) {
+    const std::vector<SDL_FPoint> vertices {a, b, c};
+    const std::vector<std::uint32_t> indices {0, 1, 2};
+    appendColoredGeometry(renderer, vertices, indices, color);
 }
 
-void fillPolygon(SDL_Renderer* renderer, const std::vector<SDL_FPoint>& points, SDL_Color color) {
+void fillPolygon(RendererState* renderer, const std::vector<SDL_FPoint>& points, SDL_Color color) {
     if (points.size() < 3) {
         return;
     }
@@ -217,29 +595,152 @@ void fillPolygon(SDL_Renderer* renderer, const std::vector<SDL_FPoint>& points, 
     centroid.x /= static_cast<float>(points.size());
     centroid.y /= static_cast<float>(points.size());
 
-    std::vector<SDL_Vertex> vertices;
-    std::vector<int> indices;
+    std::vector<SDL_FPoint> vertices;
+    std::vector<std::uint32_t> indices;
     vertices.reserve(points.size() + 1);
     indices.reserve(points.size() * 3);
-
-    vertices.push_back({centroid, color, {0.0f, 0.0f}});
+    vertices.push_back(centroid);
     for (const SDL_FPoint& point : points) {
-        vertices.push_back({point, color, {0.0f, 0.0f}});
+        vertices.push_back(point);
     }
 
-    for (int index = 1; index <= static_cast<int>(points.size()); ++index) {
-        const int next = index == static_cast<int>(points.size()) ? 1 : index + 1;
+    for (std::uint32_t index = 1; index <= points.size(); ++index) {
+        const std::uint32_t next = index == points.size() ? 1u : index + 1u;
         indices.push_back(0);
         indices.push_back(index);
         indices.push_back(next);
     }
 
-    drawTexturedFan(renderer, vertices, indices);
+    appendColoredGeometry(renderer, vertices, indices, color);
 }
 
-void drawLine(SDL_Renderer* renderer, SDL_FPoint a, SDL_FPoint b, SDL_Color color) {
-    setColor(renderer, color);
-    SDL_RenderDrawLineF(renderer, a.x, a.y, b.x, b.y);
+void appendArcPoints(
+    std::vector<SDL_FPoint>& points,
+    const SDL_FPoint& center,
+    float radius,
+    float startRadians,
+    float endRadians,
+    int steps
+) {
+    const int clampedSteps = std::max(2, steps);
+    for (int index = 0; index <= clampedSteps; ++index) {
+        const float t = static_cast<float>(index) / static_cast<float>(clampedSteps);
+        const float angle = startRadians + (endRadians - startRadians) * t;
+        points.push_back({
+            center.x + std::cos(angle) * radius,
+            center.y + std::sin(angle) * radius
+        });
+    }
+}
+
+void fillTaperedCapsule(
+    RendererState* renderer,
+    const SDL_FPoint& start,
+    const SDL_FPoint& end,
+    float startRadius,
+    float endRadius,
+    SDL_Color color
+) {
+    Vec2 axis {end.x - start.x, end.y - start.y};
+    const float axisLength = length(axis);
+    if (axisLength < 1e-4f) {
+        fillEllipse(renderer, start.x, start.y, startRadius, startRadius, color);
+        return;
+    }
+    axis = axis / axisLength;
+    const float baseAngle = std::atan2(axis.y, axis.x);
+    std::vector<SDL_FPoint> points;
+    points.reserve(20);
+    appendArcPoints(points, start, startRadius, baseAngle + kPi * 0.5f, baseAngle + kPi * 1.5f, 7);
+    appendArcPoints(points, end, endRadius, baseAngle - kPi * 0.5f, baseAngle + kPi * 0.5f, 7);
+    fillPolygon(renderer, points, color);
+}
+
+void drawLine(RendererState* renderer, SDL_FPoint a, SDL_FPoint b, SDL_Color color) {
+    Vec2 delta {b.x - a.x, b.y - a.y};
+    const float deltaLength = length(delta);
+    if (deltaLength < 1e-4f) {
+        return;
+    }
+
+    const Vec2 tangent = delta / deltaLength;
+    const Vec2 normal {-tangent.y, tangent.x};
+    const Vec2 offset = normal * (kLineWidth * 0.5f);
+    const std::vector<SDL_FPoint> vertices {
+        {a.x + offset.x, a.y + offset.y},
+        {a.x - offset.x, a.y - offset.y},
+        {b.x - offset.x, b.y - offset.y},
+        {b.x + offset.x, b.y + offset.y}
+    };
+    const std::vector<std::uint32_t> indices {0, 1, 2, 0, 2, 3};
+    appendColoredGeometry(renderer, vertices, indices, color);
+}
+
+void renderLabel(RendererState* renderer, TTF_Font* font, float x, float y, const std::string& text, SDL_Color color) {
+    if (renderer == nullptr || font == nullptr || text.empty()) {
+        return;
+    }
+
+    flushColored(renderer);
+
+    SDL_Surface* surface = TTF_RenderUTF8_Blended(font, text.c_str(), color);
+    if (surface == nullptr) {
+        return;
+    }
+
+    SDL_Surface* rgbaSurface = SDL_ConvertSurfaceFormat(surface, SDL_PIXELFORMAT_RGBA32, 0);
+    SDL_FreeSurface(surface);
+    if (rgbaSurface == nullptr) {
+        return;
+    }
+
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        GL_RGBA,
+        rgbaSurface->w,
+        rgbaSurface->h,
+        0,
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        rgbaSurface->pixels
+    );
+
+    const std::array<RendererState::TextVertex, 4> vertices {{
+        {x, y, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+        {x + static_cast<float>(rgbaSurface->w), y, 1.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+        {x + static_cast<float>(rgbaSurface->w), y + static_cast<float>(rgbaSurface->h), 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+        {x, y + static_cast<float>(rgbaSurface->h), 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f}
+    }};
+    const std::array<std::uint32_t, 6> indices {0, 1, 2, 0, 2, 3};
+
+    glUseProgram(renderer->textProgram);
+    glUniform2f(renderer->textViewportLocation, static_cast<float>(renderer->drawableWidth), static_cast<float>(renderer->drawableHeight));
+    glUniform1i(renderer->textSamplerLocation, 0);
+    glBindVertexArray(renderer->textVao);
+    glBindBuffer(GL_ARRAY_BUFFER, renderer->textVbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices.data(), GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, renderer->textEbo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices.data(), GL_DYNAMIC_DRAW);
+    glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(indices.size()), GL_UNSIGNED_INT, nullptr);
+    glBindVertexArray(0);
+
+    glDeleteTextures(1, &texture);
+    SDL_FreeSurface(rgbaSurface);
+}
+
+void presentFrame(RendererState* renderer, SDL_Window* window) {
+    flushColored(renderer);
+    SDL_GL_SwapWindow(window);
 }
 
 std::string formatFloat(float value, int precision = 1) {
@@ -280,33 +781,41 @@ bool Renderer::initialize() {
         return false;
     }
 
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_ACCELERATED_VISUAL, 1);
+#if defined(__APPLE__)
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
+#endif
+
     window_ = SDL_CreateWindow(
         "ALife Sim",
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
         kWindowWidth,
         kWindowHeight,
-        SDL_WINDOW_SHOWN
+        SDL_WINDOW_SHOWN | SDL_WINDOW_OPENGL
     );
     if (window_ == nullptr) {
         shutdown();
         return false;
     }
 
-    renderer_ = SDL_CreateRenderer(
-        window_,
-        -1,
-        SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_TARGETTEXTURE
-    );
-    if (renderer_ == nullptr) {
-        renderer_ = SDL_CreateRenderer(window_, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE);
-    }
-    if (renderer_ == nullptr) {
+    renderer_ = new RendererState {};
+    renderer_->glContext = SDL_GL_CreateContext(window_);
+    if (renderer_->glContext == nullptr) {
         shutdown();
         return false;
     }
 
-    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+    SDL_GL_MakeCurrent(window_, renderer_->glContext);
+    SDL_GL_SetSwapInterval(1);
+    if (!initializeBackend(renderer_)) {
+        shutdown();
+        return false;
+    }
 
     if (const auto fontPath = findFontPath(); fontPath.has_value()) {
         titleFont_ = TTF_OpenFont(fontPath->c_str(), 20);
@@ -331,7 +840,13 @@ void Renderer::shutdown() {
         smallFont_ = nullptr;
     }
     if (renderer_ != nullptr) {
-        SDL_DestroyRenderer(renderer_);
+        if (renderer_->glContext != nullptr) {
+            SDL_GL_MakeCurrent(window_, renderer_->glContext);
+            destroyBackend(renderer_);
+            SDL_GL_DeleteContext(renderer_->glContext);
+            renderer_->glContext = nullptr;
+        }
+        delete renderer_;
         renderer_ = nullptr;
     }
     if (window_ != nullptr) {
@@ -510,6 +1025,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         return;
     }
 
+    beginFrame(renderer_, window_);
     updateViewport(simulation);
     updateCamera(simulation);
     selectionViewport_ = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -524,20 +1040,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     const float visibleWorldHeight = worldViewport_.h / worldScale;
 
     auto drawText = [&](TTF_Font* font, float x, float y, const std::string& text, SDL_Color color) {
-        if (font == nullptr || text.empty()) {
-            return;
-        }
-        SDL_Surface* surface = TTF_RenderUTF8_Blended(font, text.c_str(), color);
-        if (surface == nullptr) {
-            return;
-        }
-        SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer_, surface);
-        if (texture != nullptr) {
-            SDL_FRect destination {x, y, static_cast<float>(surface->w), static_cast<float>(surface->h)};
-            SDL_RenderCopyF(renderer_, texture, nullptr, &destination);
-            SDL_DestroyTexture(texture);
-        }
-        SDL_FreeSurface(surface);
+        renderLabel(renderer_, font, x, y, text, color);
     };
 
     const Stats& stats = simulation.stats();
@@ -569,13 +1072,12 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         if (history.size() < 2 || maxValue <= 0.0f) {
             return;
         }
-        setColor(renderer_, color);
         for (std::size_t index = 1; index < history.size(); ++index) {
             const float x1 = rect.x + rect.w * (static_cast<float>(index - 1) / static_cast<float>(history.size() - 1));
             const float x2 = rect.x + rect.w * (static_cast<float>(index) / static_cast<float>(history.size() - 1));
             const float y1 = rect.y + rect.h - (getter(history[index - 1]) / maxValue) * rect.h;
             const float y2 = rect.y + rect.h - (getter(history[index]) / maxValue) * rect.h;
-            SDL_RenderDrawLineF(renderer_, x1, y1, x2, y2);
+            drawLine(renderer_, {x1, y1}, {x2, y2}, color);
         }
     };
 
@@ -806,75 +1308,50 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
 
         const Vec2 headAxis = nosewardAxisAt(0);
         const Vec2 headSide {-headAxis.y, headAxis.x};
-        const float headRadius = creature.bodyRadii[0] * worldScale;
-        for (int segmentIndex = kBodySegments - 1; segmentIndex >= 1; --segmentIndex) {
-            const SDL_FPoint start = screenPoints[segmentIndex - 1];
-            const SDL_FPoint end = screenPoints[segmentIndex];
-            Vec2 axis {
-                end.x - start.x,
-                end.y - start.y
-            };
-            axis = lengthSquared(axis) < 1e-4f ? headAxis * -1.0f : normalize(axis);
-            const Vec2 side {-axis.y, axis.x};
-            const float startRadius = creature.bodyRadii[segmentIndex - 1] * worldScale
-                * (segmentIndex == 1 ? 0.88f : 0.76f);
-            const float endRadius = creature.bodyRadii[segmentIndex] * worldScale * 0.72f;
-            const float shade = lerp(0.72f, 0.98f, 1.0f - static_cast<float>(segmentIndex - 1) / static_cast<float>(kBodySegments - 1));
-            const SDL_Color stripColor = tint(body, shade, 228);
-            fillPolygon(
-                renderer_,
-                {
-                    {start.x + side.x * startRadius, start.y + side.y * startRadius},
-                    {start.x - side.x * startRadius, start.y - side.y * startRadius},
-                    {end.x - side.x * endRadius, end.y - side.y * endRadius},
-                    {end.x + side.x * endRadius, end.y + side.y * endRadius}
-                },
-                stripColor
-            );
-        }
-        for (int segmentIndex = kBodySegments - 1; segmentIndex >= 0; --segmentIndex) {
-            const SDL_FPoint point = screenPoints[segmentIndex];
-            const float radius = creature.bodyRadii[segmentIndex] * worldScale;
-            const float integrity = segmentIntegrity(segmentIndex);
-            const float fullness = segmentIndex == 0 ? 0.92f : lerp(0.6f, 0.82f, 1.0f - static_cast<float>(segmentIndex) / static_cast<float>(kBodySegments - 1));
-            const SDL_Color segmentColor = tint(body, lerp(0.78f, 1.02f, integrity), 232);
-            fillEllipse(renderer_, point.x, point.y, radius * fullness, radius * fullness * 0.82f, segmentColor);
-            const SDL_Color core = tint(body, lerp(0.46f, 0.66f, integrity), 132);
-            fillEllipse(renderer_, point.x, point.y, radius * 0.42f, radius * 0.28f, core);
-            const Vec2 axis = nosewardAxisAt(segmentIndex);
-            fillEllipse(
-                renderer_,
-                point.x - axis.x * radius * 0.14f - headSide.x * radius * 0.04f,
-                point.y - axis.y * radius * 0.14f - headSide.y * radius * 0.04f,
-                radius * 0.34f,
-                radius * 0.18f,
-                shadow
-            );
-        }
-        const SDL_FPoint noseTip {head.x + headAxis.x * headRadius * 0.92f, head.y + headAxis.y * headRadius * 0.92f};
-        const SDL_FPoint noseTop {head.x + headSide.x * headRadius * 0.46f - headAxis.x * headRadius * 0.18f, head.y + headSide.y * headRadius * 0.46f - headAxis.y * headRadius * 0.18f};
-        const SDL_FPoint noseBottom {head.x - headSide.x * headRadius * 0.46f - headAxis.x * headRadius * 0.18f, head.y - headSide.y * headRadius * 0.46f - headAxis.y * headRadius * 0.18f};
-        fillTriangle(renderer_, noseTop, noseTip, noseBottom, tint(body, 1.06f, 236));
-
         const Vec2 forwardVector = headAxis;
         const Vec2 sideVector = headSide;
+        const float headRadius = creature.bodyRadii[0] * worldScale;
+        const float thrustDrive = clamp01(std::max(0.0f, creature.outputs[1]));
+        const float biteDrive = clamp01(std::max(0.0f, creature.outputs[3]));
+        const float diet = clamp01(
+            creature.genome.ecology.meatAffinity
+                / std::max(0.18f, creature.genome.ecology.plantAffinity + creature.genome.ecology.meatAffinity)
+        );
+        const float finExpressiveness = clamp01((creature.genome.morphology.finArea - 0.1f) / 0.9f);
+        const float sensorExpressiveness = clamp01((creature.traits.sensorRange - 90.0f) / 170.0f);
+        const float animationTime = simulation.timeSeconds();
+        const auto pointPlus = [](const SDL_FPoint& point, const Vec2& delta) {
+            return SDL_FPoint {point.x + delta.x, point.y + delta.y};
+        };
 
-        if (creature.genome.morphology.spikes > 0.35f) {
-            const SDL_Color spineColor = tint(shell, 0.92f, 172);
-            for (int segmentIndex = 1; segmentIndex < kBodySegments - 1; ++segmentIndex) {
-                const SDL_FPoint front = screenPoints[segmentIndex - 1];
-                const SDL_FPoint back = screenPoints[segmentIndex + 1];
-                const Vec2 axis = normalize({front.x - back.x, front.y - back.y});
-                const Vec2 localSide {-axis.y, axis.x};
-                const SDL_FPoint center = screenPoints[segmentIndex];
-                const float radius = creature.bodyRadii[segmentIndex] * worldScale;
-                const float taper = 1.0f - static_cast<float>(segmentIndex) / static_cast<float>(kBodySegments - 1);
-                const float spikeExtent = radius * (0.08f + creature.genome.morphology.spikes * 0.18f) * (0.76f + taper * 0.18f);
-                const SDL_FPoint rootA {center.x - axis.x * radius * 0.16f, center.y - axis.y * radius * 0.16f};
-                const SDL_FPoint rootB {center.x + axis.x * radius * 0.16f, center.y + axis.y * radius * 0.16f};
-                const SDL_FPoint tip {center.x + localSide.x * spikeExtent, center.y + localSide.y * spikeExtent};
-                fillTriangle(renderer_, rootA, tip, rootB, spineColor);
-            }
+        const SDL_FPoint tailBase = screenPoints[kBodySegments - 1];
+        const Vec2 tailOut = nosewardAxisAt(kBodySegments - 1) * -1.0f;
+        const Vec2 tailSide {-tailOut.y, tailOut.x};
+        const float tailBaseRadius = creature.bodyRadii[kBodySegments - 1] * worldScale;
+        const int filamentCount = std::clamp(
+            1 + static_cast<int>(std::round(creature.traits.tailFork * 1.6f + creature.genome.morphology.tailFlex * 1.2f)),
+            1,
+            3
+        );
+        const float filamentLength = creature.traits.segmentSpacing * worldScale * (1.05f + creature.traits.tailLengthScale * 0.9f);
+        const SDL_Color filamentColor = tint(accent, 0.82f, 196);
+        for (int filamentIndex = 0; filamentIndex < filamentCount; ++filamentIndex) {
+            const float spread = filamentCount == 1
+                ? 0.0f
+                : (static_cast<float>(filamentIndex) / static_cast<float>(filamentCount - 1) - 0.5f) * 2.0f;
+            const SDL_FPoint root = pointPlus(
+                tailBase,
+                tailSide * (spread * tailBaseRadius * 0.62f) + tailOut * (tailBaseRadius * 0.28f)
+            );
+            const float swing = std::sin(creature.gaitPhase * 1.18f + static_cast<float>(filamentIndex) * 0.85f)
+                * (0.14f + creature.genome.morphology.tailFlex * 0.42f)
+                * (0.28f + thrustDrive * 0.72f);
+            const Vec2 midDir = rotate(tailOut, swing + spread * 0.12f);
+            const Vec2 tipDir = rotate(tailOut, swing * 1.45f + spread * 0.22f);
+            const SDL_FPoint mid = pointPlus(root, midDir * (filamentLength * 0.44f));
+            const SDL_FPoint tip = pointPlus(mid, tipDir * (filamentLength * 0.62f));
+            fillTaperedCapsule(renderer_, root, mid, tailBaseRadius * 0.16f, tailBaseRadius * 0.08f, filamentColor);
+            fillTaperedCapsule(renderer_, mid, tip, tailBaseRadius * 0.08f, std::max(0.8f, tailBaseRadius * 0.026f), filamentColor);
         }
 
         const int finLeadSegment = std::clamp(
@@ -891,104 +1368,160 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
             (finBaseA.x + finBaseB.x) * 0.5f,
             (finBaseA.y + finBaseB.y) * 0.5f
         };
-        const float finExpressiveness = clamp01((creature.genome.morphology.finArea - 0.18f) / 0.82f);
-        if (finExpressiveness > 0.08f) {
-            const float finSpan = creature.traits.finSpan * worldScale * lerp(0.18f, 0.42f, finIntegrity) * finExpressiveness;
-            const float finSweep = creature.traits.segmentSpacing * worldScale * 0.42f;
-            const SDL_FPoint finRootFront {
-                finRoot.x + finAxis.x * finSweep * 0.2f,
-                finRoot.y + finAxis.y * finSweep * 0.2f
-            };
-            const SDL_FPoint finRootBack {
-                finRoot.x - finAxis.x * finSweep * 0.36f,
-                finRoot.y - finAxis.y * finSweep * 0.36f
-            };
-            const SDL_FPoint finTipTop {
-                finRoot.x + finSide.x * finSpan - finAxis.x * finSweep * 0.34f,
-                finRoot.y + finSide.y * finSpan - finAxis.y * finSweep * 0.34f
-            };
-            fillTriangle(renderer_, finRootFront, finTipTop, finRootBack, tint(accent, 0.82f, 132));
-            if (finExpressiveness > 0.58f) {
-                const SDL_FPoint finTipBottom {
-                    finRoot.x - finSide.x * finSpan * 0.72f - finAxis.x * finSweep * 0.28f,
-                    finRoot.y - finSide.y * finSpan * 0.72f - finAxis.y * finSweep * 0.28f
-                };
-                fillTriangle(renderer_, finRootFront, finTipBottom, finRootBack, tint(accent, 0.7f, 112));
+        if (finExpressiveness > 0.04f) {
+            const float finLength = creature.traits.finSpan * worldScale * (0.22f + finExpressiveness * 0.4f) * lerp(0.62f, 1.0f, finIntegrity);
+            const float finBaseRadius = creature.bodyRadii[finLeadSegment] * worldScale * 0.14f;
+            for (float sideSign : {-1.0f, 1.0f}) {
+                const SDL_FPoint anchor = pointPlus(finRoot, finSide * (sideSign * creature.bodyRadii[finLeadSegment] * worldScale * 0.62f));
+                const float flap = std::sin(creature.gaitPhase * 1.36f + sideSign * 1.1f)
+                    * (0.08f + finExpressiveness * 0.38f)
+                    * (0.25f + thrustDrive * 0.75f);
+                const Vec2 finDirection = rotate(finSide * sideSign - finAxis * 0.24f, flap);
+                const SDL_FPoint finTip = pointPlus(anchor, finDirection * finLength);
+                fillTaperedCapsule(renderer_, anchor, finTip, finBaseRadius, std::max(0.9f, finBaseRadius * 0.22f), tint(accent, 0.8f, 132));
+                const SDL_FPoint finBack = pointPlus(anchor, finAxis * (-finBaseRadius * 1.2f));
+                fillTriangle(renderer_, finBack, finTip, pointPlus(anchor, finAxis * (finBaseRadius * 0.72f)), tint(accent, 0.62f, 96));
             }
         }
 
-        const SDL_FPoint tailBase = screenPoints[kBodySegments - 1];
-        const Vec2 tailDirection = nosewardAxisAt(kBodySegments - 1) * -1.0f;
-        const Vec2 tailSide {-tailDirection.y, tailDirection.x};
-        const float tailIntegrity = segmentIntegrity(kBodySegments - 1);
-        const float tailSpan = creature.bodyRadii[kBodySegments - 1] * worldScale * (0.42f + creature.traits.tailFork * 0.18f)
-            * lerp(0.58f, 1.0f, tailIntegrity);
-        const float tailLength = creature.traits.segmentSpacing * worldScale * (0.72f + creature.traits.tailLengthScale * 0.54f);
-        const float forkSeparation = tailSpan * (0.16f + creature.traits.tailFork * 0.22f);
-        const SDL_FPoint tailRoot {
-            tailBase.x + tailDirection.x * tailSpan * 0.35f,
-            tailBase.y + tailDirection.y * tailSpan * 0.35f
-        };
-        const SDL_FPoint rootTop {tailRoot.x + tailSide.x * tailSpan * 0.45f, tailRoot.y + tailSide.y * tailSpan * 0.45f};
-        const SDL_FPoint rootBottom {tailRoot.x - tailSide.x * tailSpan * 0.45f, tailRoot.y - tailSide.y * tailSpan * 0.45f};
-        const SDL_FPoint tailCenter {
-            tailRoot.x + tailDirection.x * (tailLength * 0.24f),
-            tailRoot.y + tailDirection.y * (tailLength * 0.24f)
-        };
-        const SDL_FPoint topTip {
-            tailRoot.x + tailDirection.x * tailLength + tailSide.x * (tailSpan + forkSeparation),
-            tailRoot.y + tailDirection.y * tailLength + tailSide.y * (tailSpan + forkSeparation)
-        };
-        const SDL_FPoint bottomTip {
-            tailRoot.x + tailDirection.x * tailLength - tailSide.x * (tailSpan + forkSeparation),
-            tailRoot.y + tailDirection.y * tailLength - tailSide.y * (tailSpan + forkSeparation)
-        };
-        fillTriangle(renderer_, rootTop, tailCenter, rootBottom, tint(accent, 0.55f, 156));
-        fillTriangle(renderer_, rootTop, topTip, tailCenter, tint(accent, 0.92f, 206));
-        fillTriangle(renderer_, tailCenter, bottomTip, rootBottom, tint(accent, 0.92f, 206));
-        drawLine(renderer_, tailBase, tailCenter, tint(shell, 1.05f, 148));
+        for (int segmentIndex = kBodySegments - 1; segmentIndex >= 1; --segmentIndex) {
+            const SDL_FPoint start = screenPoints[segmentIndex - 1];
+            const SDL_FPoint end = screenPoints[segmentIndex];
+            const float startRadius = creature.bodyRadii[segmentIndex - 1] * worldScale
+                * (segmentIndex == 1 ? 0.9f : 0.8f);
+            const float endRadius = creature.bodyRadii[segmentIndex] * worldScale * 0.74f;
+            const float shade = lerp(0.74f, 1.0f, 1.0f - static_cast<float>(segmentIndex - 1) / static_cast<float>(kBodySegments - 1));
+            fillTaperedCapsule(renderer_, start, end, startRadius, endRadius, tint(body, shade, 226));
+        }
 
-        const SDL_FPoint jawBase {
-            head.x + forwardVector.x * (headRadius * (0.48f + creature.traits.jawOffset)),
-            head.y + forwardVector.y * (headRadius * (0.48f + creature.traits.jawOffset))
-        };
-        const SDL_FPoint jawTip {
-            jawBase.x + forwardVector.x * (creature.traits.biteReach * worldScale * 0.22f),
-            jawBase.y + forwardVector.y * (creature.traits.biteReach * worldScale * 0.22f)
-        };
-        const Vec2 jawSide = sideVector * (headRadius * lerp(0.18f, 0.34f, creature.genome.morphology.jawArc));
-        fillTriangle(
-            renderer_,
-            {jawBase.x + jawSide.x, jawBase.y + jawSide.y},
-            jawTip,
-            {jawBase.x - jawSide.x, jawBase.y - jawSide.y},
-            shell
-        );
+        for (int segmentIndex = kBodySegments - 1; segmentIndex >= 0; --segmentIndex) {
+            const SDL_FPoint point = screenPoints[segmentIndex];
+            const float radius = creature.bodyRadii[segmentIndex] * worldScale;
+            const float integrity = segmentIntegrity(segmentIndex);
+            const float fullness = segmentIndex == 0 ? 0.96f : lerp(0.66f, 0.88f, 1.0f - static_cast<float>(segmentIndex) / static_cast<float>(kBodySegments - 1));
+            fillEllipse(renderer_, point.x, point.y, radius * fullness, radius * fullness * 0.86f, tint(body, lerp(0.82f, 1.04f, integrity), 232));
+            fillEllipse(renderer_, point.x - sideVector.x * radius * 0.08f, point.y - sideVector.y * radius * 0.08f, radius * 0.44f, radius * 0.26f, tint(body, 0.58f, 124));
+            const Vec2 axis = nosewardAxisAt(segmentIndex);
+            fillEllipse(
+                renderer_,
+                point.x - axis.x * radius * 0.18f - headSide.x * radius * 0.05f,
+                point.y - axis.y * radius * 0.18f - headSide.y * radius * 0.05f,
+                radius * 0.3f,
+                radius * 0.14f,
+                shadow
+            );
+        }
 
-        const SDL_FPoint eyePoint {
-            head.x + forwardVector.x * headRadius * 0.18f - sideVector.x * headRadius * 0.24f,
-            head.y + forwardVector.y * headRadius * 0.18f - sideVector.y * headRadius * 0.24f
-        };
-        fillEllipse(renderer_, eyePoint.x, eyePoint.y, 2.8f, 2.8f, eye);
-        fillEllipse(renderer_, eyePoint.x + 0.6f, eyePoint.y, 1.0f, 1.0f, {14, 16, 20, 255});
+        const SDL_FPoint noseTip {head.x + headAxis.x * headRadius * 0.96f, head.y + headAxis.y * headRadius * 0.96f};
+        const SDL_FPoint noseTop {head.x + headSide.x * headRadius * 0.42f - headAxis.x * headRadius * 0.12f, head.y + headSide.y * headRadius * 0.42f - headAxis.y * headRadius * 0.12f};
+        const SDL_FPoint noseBottom {head.x - headSide.x * headRadius * 0.42f - headAxis.x * headRadius * 0.12f, head.y - headSide.y * headRadius * 0.42f - headAxis.y * headRadius * 0.12f};
+        fillTriangle(renderer_, noseTop, noseTip, noseBottom, tint(body, 1.08f, 238));
 
-        if (creature.genome.morphology.pattern < 0.5f) {
-            fillEllipse(renderer_, head.x - headSide.x * headRadius * 0.12f, head.y - headSide.y * headRadius * 0.12f, 3.2f, 2.2f, shadow);
-            const SDL_FPoint torso = screenPoints[1];
-            fillEllipse(renderer_, torso.x + headSide.x * 2.0f, torso.y + headSide.y * 2.0f, 2.8f, 1.9f, shadow);
-        } else {
-            for (int segmentIndex = 0; segmentIndex < kBodySegments; ++segmentIndex) {
-                const SDL_FPoint point = screenPoints[segmentIndex];
+        const int whiskerCount = 1 + static_cast<int>(sensorExpressiveness > 0.38f);
+        const float whiskerLength = headRadius * (0.32f + sensorExpressiveness * 0.64f);
+        for (int whiskerIndex = 0; whiskerIndex < whiskerCount; ++whiskerIndex) {
+            const float sideSign = whiskerCount == 1 ? -1.0f : (whiskerIndex == 0 ? -1.0f : 1.0f);
+            const SDL_FPoint root = pointPlus(
+                head,
+                headSide * (sideSign * headRadius * 0.12f) - headAxis * (headRadius * 0.14f)
+            );
+            const float wiggle = std::sin(animationTime * 2.6f + creature.id * 0.07f + whiskerIndex * 1.4f)
+                * (0.08f + creature.signal * 0.14f + sensorExpressiveness * 0.08f);
+            const Vec2 whiskerDir = rotate(headAxis * -1.0f + headSide * sideSign * 0.12f, wiggle);
+            const SDL_FPoint tip = pointPlus(root, whiskerDir * whiskerLength);
+            fillTaperedCapsule(renderer_, root, tip, 1.5f, 0.55f, tint(accent, 0.82f, 148));
+        }
+
+        if (creature.genome.morphology.spikes > 0.28f) {
+            const SDL_Color spineColor = tint(shell, 0.92f, 168);
+            for (int segmentIndex = 1; segmentIndex < kBodySegments - 1; ++segmentIndex) {
+                const SDL_FPoint center = screenPoints[segmentIndex];
                 const Vec2 axis = nosewardAxisAt(segmentIndex);
-                fillEllipse(
-                    renderer_,
-                    point.x - axis.x * creature.bodyRadii[segmentIndex] * worldScale * 0.18f,
-                    point.y - axis.y * creature.bodyRadii[segmentIndex] * worldScale * 0.18f,
-                    creature.bodyRadii[segmentIndex] * worldScale * 0.18f,
-                    1.5f,
-                    shadow
-                );
+                const Vec2 localSide {-axis.y, axis.x};
+                const float radius = creature.bodyRadii[segmentIndex] * worldScale;
+                const float spikeExtent = radius * (0.05f + creature.genome.morphology.spikes * 0.18f);
+                const SDL_FPoint rootA {center.x - axis.x * radius * 0.1f, center.y - axis.y * radius * 0.1f};
+                const SDL_FPoint rootB {center.x + axis.x * radius * 0.1f, center.y + axis.y * radius * 0.1f};
+                const SDL_FPoint tip {center.x - localSide.x * spikeExtent, center.y - localSide.y * spikeExtent};
+                fillTriangle(renderer_, rootA, tip, rootB, spineColor);
             }
+        }
+
+        const float slotWidth = headRadius * lerp(0.42f, 0.24f, diet) * (0.68f + creature.genome.morphology.jawArc * 0.38f);
+        const float slotHeight = headRadius * lerp(0.12f, 0.06f, diet) * (0.6f + creature.traits.jawOffset * 0.55f) * (1.0f + biteDrive * lerp(1.2f, 2.8f, diet));
+        const SDL_FPoint mouthCenter = pointPlus(head, headAxis * (headRadius * 0.5f));
+        fillTaperedCapsule(
+            renderer_,
+            pointPlus(mouthCenter, sideVector * slotWidth),
+            pointPlus(mouthCenter, sideVector * -slotWidth),
+            slotHeight,
+            slotHeight,
+            tint(shadow, 0.56f, 224)
+        );
+        if (diet > 0.58f) {
+            const float jawReach = creature.traits.biteReach * worldScale * 0.11f;
+            const SDL_FPoint jawTip = pointPlus(mouthCenter, headAxis * jawReach);
+            fillTriangle(
+                renderer_,
+                pointPlus(mouthCenter, headAxis * (slotHeight * 0.65f) + sideVector * slotWidth * 0.62f),
+                jawTip,
+                pointPlus(mouthCenter, headAxis * (slotHeight * 0.65f) - sideVector * slotWidth * 0.62f),
+                tint(shell, 0.9f, 168)
+            );
+            fillTriangle(
+                renderer_,
+                pointPlus(mouthCenter, headAxis * (-slotHeight * 0.65f) + sideVector * slotWidth * 0.62f),
+                jawTip,
+                pointPlus(mouthCenter, headAxis * (-slotHeight * 0.65f) - sideVector * slotWidth * 0.62f),
+                tint(shell, 0.72f, 132)
+            );
+        }
+
+        const int eyeCount = 1 + static_cast<int>(sensorExpressiveness > 0.44f);
+        for (int eyeIndex = 0; eyeIndex < eyeCount; ++eyeIndex) {
+            const float eyeSide = eyeCount == 1 ? -0.22f : (eyeIndex == 0 ? -0.26f : 0.02f);
+            const float eyeRadius = headRadius * (eyeIndex == 0 ? 0.16f : 0.11f);
+            const SDL_FPoint eyePoint = pointPlus(
+                head,
+                headAxis * (headRadius * 0.16f) + headSide * (eyeSide * headRadius)
+            );
+            fillEllipse(renderer_, eyePoint.x, eyePoint.y, eyeRadius, eyeRadius, eye);
+            fillEllipse(
+                renderer_,
+                eyePoint.x + forwardVector.x * eyeRadius * 0.12f,
+                eyePoint.y + forwardVector.y * eyeRadius * 0.12f,
+                eyeRadius * 0.42f,
+                eyeRadius * 0.42f,
+                {14, 16, 20, 255}
+            );
+            fillEllipse(
+                renderer_,
+                eyePoint.x - eyeRadius * 0.22f,
+                eyePoint.y - eyeRadius * 0.22f,
+                eyeRadius * 0.2f,
+                eyeRadius * 0.2f,
+                {244, 246, 248, 180}
+            );
+        }
+
+        const int markCount = creature.genome.morphology.pattern < 0.5f ? 2 : 3;
+        for (int markIndex = 0; markIndex < markCount; ++markIndex) {
+            const float t = static_cast<float>(markIndex) / static_cast<float>(std::max(1, markCount - 1));
+            const int segmentIndex = std::clamp(1 + markIndex, 1, kBodySegments - 2);
+            const SDL_FPoint center = screenPoints[segmentIndex];
+            const Vec2 axis = nosewardAxisAt(segmentIndex);
+            const Vec2 side {-axis.y, axis.x};
+            const float markLength = creature.bodyRadii[segmentIndex] * worldScale * lerp(0.42f, 0.68f, t);
+            const float markHeight = creature.bodyRadii[segmentIndex] * worldScale * lerp(0.08f, 0.14f, 1.0f - t);
+            const SDL_FPoint markCenter = pointPlus(center, side * (creature.bodyRadii[segmentIndex] * worldScale * (0.08f + t * 0.06f)));
+            fillTaperedCapsule(
+                renderer_,
+                pointPlus(markCenter, side * markLength),
+                pointPlus(markCenter, side * -markLength),
+                markHeight,
+                markHeight,
+                tint(shell, 0.52f, 106)
+            );
         }
 
         if (selected) {
@@ -1036,7 +1569,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         static_cast<int>(std::ceil(worldViewport_.w)),
         static_cast<int>(std::ceil(worldViewport_.h))
     };
-    SDL_RenderSetClipRect(renderer_, &worldClip);
+    setClipRect(renderer_, &worldClip);
 
     constexpr int gridColumns = 26;
     constexpr int gridRows = 18;
@@ -1188,7 +1721,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     if (showBrainOverlay_) {
         drawBrainOverlay(info);
     }
-    SDL_RenderSetClipRect(renderer_, nullptr);
+    setClipRect(renderer_, nullptr);
 
     const SDL_FRect panel {
         static_cast<float>(kWindowWidth - kPanelWidth - kMargin),
@@ -1282,7 +1815,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         static_cast<int>(std::ceil(selectionViewport_.w)),
         static_cast<int>(std::ceil(selectionViewport_.h))
     };
-    SDL_RenderSetClipRect(renderer_, &selectionClip);
+    setClipRect(renderer_, &selectionClip);
 
     if (info.valid) {
         float sy = selectionViewport_.y + 4.0f - selectionScroll_;
@@ -1425,7 +1958,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         drawText(smallFont_, selectionCard.x + 12.0f, sy + 86.0f, "T toggles the brain panel. observer picks can follow lineages.", {125, 139, 155, 255});
     }
 
-    SDL_RenderSetClipRect(renderer_, nullptr);
+    setClipRect(renderer_, nullptr);
     if (maxSelectionScroll > 1.0f) {
         drawText(smallFont_, selectionCard.x + selectionCard.w - 84.0f, selectionCard.y + 7.0f, "wheel / [ ]", {124, 146, 164, 255});
         const SDL_FRect track {selectionCard.x + selectionCard.w - 8.0f, selectionViewport_.y, 4.0f, selectionViewport_.h};
@@ -1459,7 +1992,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         {154, 173, 190, 255}
     );
 
-    SDL_RenderPresent(renderer_);
+    presentFrame(renderer_, window_);
 }
 
 }  // namespace alife

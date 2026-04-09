@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This repository is a fresh native C++/SDL2 ALife simulation aimed at open-ended evolution from a single ancestral lineage.
+This repository is a fresh native C++/SDL2/OpenGL ALife simulation aimed at open-ended evolution from a single ancestral lineage.
 
 The long-term goal is not a scripted predator/prey toy. The goal is a watchable, high-performance ecosystem where trophic roles, social structure, and morphology emerge from physics, control, and selection pressure.
 
@@ -37,7 +37,7 @@ The long-term goal is not a scripted predator/prey toy. The goal is a watchable,
   Source of truth for genomes, grouped `SimulationConfig`, traits, body geometry, controller updates, ecology, reproduction, persistence, and history.
 - [src/render/Renderer.hpp](/Users/jamesharvey/Development/Personal-Code-Projects/ALife-Sim/src/render/Renderer.hpp)
 - [src/render/Renderer.cpp](/Users/jamesharvey/Development/Personal-Code-Projects/ALife-Sim/src/render/Renderer.cpp)
-  Thin native rendering and HUD layer. Keep simulation rules out of here.
+  Thin native rendering and HUD layer. The runtime now goes through a real OpenGL-backed path for both world and HUD. Keep simulation rules out of here.
 
 ## Current Model
 
@@ -59,6 +59,7 @@ The long-term goal is not a scripted predator/prey toy. The goal is a watchable,
 - The world view now has a real follow camera with zoom controls, and the app boots in a closer subject-following view to make visual QA and screenshotting practical.
 - Observer selection is lineage-aware: when a watched creature dies, the sim should try to stay on that clade instead of immediately jumping to an unrelated organism.
 - The renderer also has habitat overlay modes (`V`) for visual QA of nutrient, lee-shelter, and shear fields.
+- The world view and the right-hand HUD now share the same OpenGL-backed frame path. Avoid reintroducing split SDL-renderer hacks.
 - Phase 0 backbone is now live: grouped config, save/load including config and RNG state, headless batch mode, structured world snapshots, and regression coverage for smoke, determinism, and round-trip persistence.
 
 ## Important Design Rule

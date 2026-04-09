@@ -1,6 +1,6 @@
 # ALife Sim
 
-A native C++/SDL2 artificial life sandbox focused on physics-first evolution.
+A native C++/SDL2/OpenGL artificial life sandbox focused on physics-first evolution.
 
 This repository is a fresh start from the older predator/prey project. Instead of hard-coding ecological roles, the new sim begins from a single ancestral body plan and lets trophic niches emerge through continuous tradeoffs in morphology, control, and metabolism.
 
@@ -14,7 +14,7 @@ This repository is a fresh start from the older predator/prey project. Instead o
 - Reef-like substrate structures that create shelter, edge shear, and nutrient pockets
 - Reef wakes now create lee-shelter niches that reduce local flow behind structures
 - Depletable substrate nutrients that blooms and grazers compete over
-- Native SDL2 runtime so we can push simulation complexity without browser overhead
+- Native SDL2 runtime with an OpenGL-backed world and HUD path so we can push simulation complexity without browser overhead
 
 ## Physics-First Design
 
@@ -172,5 +172,5 @@ The Phase 0 regression suite currently covers:
 ## Repo Layout
 
 - `src/sim`: simulation state, genomes, physics, and ecology
-- `src/render`: SDL2 renderer, HUD, graphs, and procedural phenotype rendering
+- `src/render`: native OpenGL-backed renderer, HUD, graphs, and procedural phenotype rendering
 - `docs`: architecture notes and future direction
