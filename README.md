@@ -69,17 +69,19 @@ Phase 0 of the roadmap is now in place: the sim has grouped configuration, state
 - `B`: select a representative from the newest active branch
 - `C`: clear selection
 - `V`: cycle habitat overlay (`off`, `nutrient`, `lee shelter`, `shear`)
-- `G`: toggle follow-camera lock on the selected creature
+- `G`: toggle explicit subject tracking on the selected creature
 - `Z`: snap the camera back onto the current subject
 - `+` / `-`: zoom the world view in or out
+- `W` / `A` / `S` / `D` or arrow keys: pan the camera manually
 - `[` / `PageUp`: scroll the selection inspector upward
 - `]` / `PageDown`: scroll the selection inspector downward
-- `Mouse Wheel` over the world view: zoom the camera
+- `Mouse Wheel` over the world view: zoom the camera around the cursor
 - `Mouse Wheel` over the selection card: scroll the selection inspector
 - `Left Click`: select the nearest creature in the sim view
+- `Left Drag` on empty water: pan the camera like the original `evolving-sim`
 - `Esc`: quit
 
-On launch, the sim starts with one creature already selected and the camera already zoomed in and following that subject, so close-up QA screenshots are easier to capture. Follow mode now uses a dead-zone leash instead of a soft center-lock, so the subject can move around locally without making the whole world slide on every small wiggle. If a watched creature dies, the observer now tries to stay locked onto the same lineage before falling back to broader picks.
+On launch, the sim starts with one creature already selected and the camera already zoomed in on that subject, but tracking is off by default so the world stays stable for inspection. Manual pan now behaves like the original `evolving-sim`: dragging empty space or using `WASD` moves the camera directly, and manual camera motion turns tracking off instead of fighting the user. If a watched creature dies while tracking is enabled, the observer still tries to stay locked onto the same lineage before falling back to broader picks.
 
 ## Build
 

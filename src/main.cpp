@@ -969,7 +969,7 @@ int main(int argc, char** argv) {
                             renderer.cycleDebugOverlay();
                             break;
                         case SDLK_g:
-                            renderer.toggleFollowSelection();
+                            renderer.toggleFollowSelection(simulation);
                             break;
                         case SDLK_t:
                             renderer.toggleBrainOverlay();
@@ -1034,11 +1034,21 @@ int main(int argc, char** argv) {
                             const auto selection = simulation.creatureAt(worldPoint->x, worldPoint->y, 30.0f);
                             if (selection.has_value()) {
                                 simulation.setSelectedCreature(*selection);
-                                renderer.focusSelection(simulation, true);
                             } else {
                                 simulation.clearSelection();
+                                renderer.beginWorldDrag(event.button.x, event.button.y);
                             }
                         }
+                    }
+                    break;
+                case SDL_MOUSEBUTTONUP:
+                    if (event.button.button == SDL_BUTTON_LEFT) {
+                        renderer.endWorldDrag();
+                    }
+                    break;
+                case SDL_MOUSEMOTION:
+                    if (renderer.isDraggingWorld()) {
+                        renderer.updateWorldDrag(event.motion.x, event.motion.y, simulation);
                     }
                     break;
                 case SDL_MOUSEWHEEL: {
@@ -1051,7 +1061,7 @@ int main(int argc, char** argv) {
                         const float zoomSteps = event.wheel.preciseY != 0.0f
                             ? event.wheel.preciseY
                             : static_cast<float>(event.wheel.y);
-                        renderer.zoomView(zoomSteps, simulation);
+                        renderer.zoomView(zoomSteps, simulation, SDL_Point{mouseX, mouseY});
                     }
                     break;
                 }
@@ -1059,6 +1069,23 @@ int main(int argc, char** argv) {
                     break;
             }
         }
+
+        const Uint8* keys = SDL_GetKeyboardState(nullptr);
+        const float cameraPanStep = 10.0f / std::max(1.0f, renderer.zoomLevel());
+        alife::Vec2 panDelta {};
+        if (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP]) {
+            panDelta.y -= cameraPanStep;
+        }
+        if (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN]) {
+            panDelta.y += cameraPanStep;
+        }
+        if (keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT]) {
+            panDelta.x -= cameraPanStep;
+        }
+        if (keys[SDL_SCANCODE_D] || keys[SDL_SCANCODE_RIGHT]) {
+            panDelta.x += cameraPanStep;
+        }
+        renderer.panCameraWorld(panDelta);
 
         const auto currentTime = std::chrono::steady_clock::now();
         const float frameSeconds = std::chrono::duration<float>(currentTime - previousTime).count();

@@ -64,8 +64,6 @@ constexpr float kPi = 3.14159265358979323846f;
 constexpr float kMinCameraZoom = 1.0f;
 constexpr float kMaxCameraZoom = 14.0f;
 constexpr float kDefaultCameraZoom = 6.5f;
-constexpr float kCameraFollowBlend = 0.18f;
-constexpr float kCameraDeadZoneFraction = 0.14f;
 constexpr float kLineWidth = 1.2f;
 
 float clamp01(float value) {
@@ -130,16 +128,19 @@ Vec2 wrapWorldPoint(const Vec2& point, float worldWidth, float worldHeight) {
     return {wrapAxis(point.x, worldWidth), wrapAxis(point.y, worldHeight)};
 }
 
-float shortestWrappedOffset(float delta, float extent) {
+float unwrapAxisNearReference(float value, float reference, float extent) {
     if (extent <= 0.0f) {
-        return delta;
+        return value;
     }
-    if (delta > extent * 0.5f) {
-        delta -= extent;
-    } else if (delta < -extent * 0.5f) {
-        delta += extent;
-    }
-    return delta;
+    const float wraps = std::round((reference - value) / extent);
+    return value + wraps * extent;
+}
+
+Vec2 unwrapPointNearReference(const Vec2& point, const Vec2& reference, float worldWidth, float worldHeight) {
+    return {
+        unwrapAxisNearReference(point.x, reference.x, worldWidth),
+        unwrapAxisNearReference(point.y, reference.y, worldHeight)
+    };
 }
 
 std::uint8_t toByte(float value) {
@@ -877,14 +878,18 @@ void Renderer::resetCamera(const Simulation& simulation) {
     focusSelection(simulation, true);
 }
 
+float Renderer::worldScale(const Simulation& simulation) const {
+    return std::min(worldViewport_.w / simulation.worldWidth(), worldViewport_.h / simulation.worldHeight()) * cameraZoom_;
+}
+
 Vec2 Renderer::visibleWorldExtents(const Simulation& simulation) const {
-    const float worldScale = std::min(worldViewport_.w / simulation.worldWidth(), worldViewport_.h / simulation.worldHeight()) * cameraZoom_;
-    if (worldScale <= 1e-5f) {
+    const float scale = worldScale(simulation);
+    if (scale <= 1e-5f) {
         return {simulation.worldWidth(), simulation.worldHeight()};
     }
     return {
-        worldViewport_.w / worldScale,
-        worldViewport_.h / worldScale
+        worldViewport_.w / scale,
+        worldViewport_.h / scale
     };
 }
 
@@ -894,32 +899,9 @@ void Renderer::focusSelection(const Simulation& simulation, bool snap) {
         if (snap || !cameraInitialized_) {
             cameraCenter_ = selected.position;
         } else {
-            const Vec2 delta {
-                shortestWrappedOffset(selected.position.x - cameraCenter_.x, simulation.worldWidth()),
-                shortestWrappedOffset(selected.position.y - cameraCenter_.y, simulation.worldHeight())
-            };
-            const Vec2 visible = visibleWorldExtents(simulation);
-            const Vec2 deadZone {
-                visible.x * kCameraDeadZoneFraction,
-                visible.y * kCameraDeadZoneFraction
-            };
-            Vec2 followTarget = cameraCenter_;
-
-            if (std::abs(delta.x) > deadZone.x) {
-                const float overflow = delta.x - std::copysign(deadZone.x, delta.x);
-                followTarget.x += overflow;
-            }
-            if (std::abs(delta.y) > deadZone.y) {
-                const float overflow = delta.y - std::copysign(deadZone.y, delta.y);
-                followTarget.y += overflow;
-            }
-
-            const Vec2 correction {
-                shortestWrappedOffset(followTarget.x - cameraCenter_.x, simulation.worldWidth()),
-                shortestWrappedOffset(followTarget.y - cameraCenter_.y, simulation.worldHeight())
-            };
-            cameraCenter_ = wrapWorldPoint(
-                cameraCenter_ + correction * kCameraFollowBlend,
+            cameraCenter_ = unwrapPointNearReference(
+                selected.position,
+                cameraCenter_,
                 simulation.worldWidth(),
                 simulation.worldHeight()
             );
@@ -934,45 +916,66 @@ void Renderer::focusSelection(const Simulation& simulation, bool snap) {
     }
 }
 
-void Renderer::toggleFollowSelection() {
+void Renderer::toggleFollowSelection(const Simulation& simulation) {
     followSelection_ = !followSelection_;
+    if (followSelection_) {
+        focusSelection(simulation, true);
+    }
 }
 
 void Renderer::toggleBrainOverlay() {
     showBrainOverlay_ = !showBrainOverlay_;
 }
 
-void Renderer::zoomView(float zoomSteps, const Simulation& simulation) {
+void Renderer::zoomView(float zoomSteps, const Simulation& simulation, std::optional<SDL_Point> anchor) {
     if (!cameraInitialized_) {
         resetCamera(simulation);
     }
+    std::optional<Vec2> anchorBefore;
+    if (anchor.has_value()) {
+        anchorBefore = screenToWorld(anchor->x, anchor->y, simulation);
+    }
     const float factor = std::pow(1.18f, zoomSteps);
     cameraZoom_ = std::clamp(cameraZoom_ * factor, kMinCameraZoom, kMaxCameraZoom);
+
+    if (anchorBefore.has_value()) {
+        const float scale = worldScale(simulation);
+        if (scale > 1e-5f) {
+            const Vec2 targetBefore = unwrapPointNearReference(
+                *anchorBefore,
+                cameraCenter_,
+                simulation.worldWidth(),
+                simulation.worldHeight()
+            );
+            const Vec2 anchorAfter {
+                cameraCenter_.x + (static_cast<float>(anchor->x) - (worldViewport_.x + worldViewport_.w * 0.5f)) / scale,
+                cameraCenter_.y + (static_cast<float>(anchor->y) - (worldViewport_.y + worldViewport_.h * 0.5f)) / scale
+            };
+            cameraCenter_ = cameraCenter_ + (targetBefore - anchorAfter);
+        }
+    }
 }
 
 void Renderer::updateCamera(const Simulation& simulation) {
     if (!cameraInitialized_) {
         resetCamera(simulation);
     }
-    if (followSelection_) {
+    if (followSelection_ && !draggingWorld_) {
         focusSelection(simulation, false);
     }
 }
 
 Vec2 Renderer::wrappedPositionNearCamera(const Vec2& point, const Simulation& simulation) const {
-    return {
-        cameraCenter_.x + shortestWrappedOffset(point.x - cameraCenter_.x, simulation.worldWidth()),
-        cameraCenter_.y + shortestWrappedOffset(point.y - cameraCenter_.y, simulation.worldHeight())
-    };
+    return unwrapPointNearReference(point, cameraCenter_, simulation.worldWidth(), simulation.worldHeight());
 }
 
 SDL_FPoint Renderer::worldToScreen(const Vec2& world, const Simulation& simulation) const {
-    const float worldScale = std::min(worldViewport_.w / simulation.worldWidth(), worldViewport_.h / simulation.worldHeight()) * cameraZoom_;
+    const float scale = worldScale(simulation);
     const Vec2 wrapped = wrappedPositionNearCamera(world, simulation);
     const Vec2 delta {wrapped.x - cameraCenter_.x, wrapped.y - cameraCenter_.y};
     return {
-        worldViewport_.x + worldViewport_.w * 0.5f + delta.x * worldScale,
-        worldViewport_.y + worldViewport_.h * 0.5f + delta.y * worldScale
+        worldViewport_.x + worldViewport_.w * 0.5f + delta.x * scale,
+        worldViewport_.y + worldViewport_.h * 0.5f + delta.y * scale
     };
 }
 
@@ -988,15 +991,62 @@ std::optional<Vec2> Renderer::screenToWorld(int screenX, int screenY, const Simu
         return std::nullopt;
     }
 
-    const float worldScale = std::min(worldViewport_.w / simulation.worldWidth(), worldViewport_.h / simulation.worldHeight()) * cameraZoom_;
+    const float scale = worldScale(simulation);
+    if (scale <= 1e-5f) {
+        return std::nullopt;
+    }
     return wrapWorldPoint(
         {
-            cameraCenter_.x + (static_cast<float>(screenX) - (worldViewport_.x + worldViewport_.w * 0.5f)) / worldScale,
-            cameraCenter_.y + (static_cast<float>(screenY) - (worldViewport_.y + worldViewport_.h * 0.5f)) / worldScale
+            cameraCenter_.x + (static_cast<float>(screenX) - (worldViewport_.x + worldViewport_.w * 0.5f)) / scale,
+            cameraCenter_.y + (static_cast<float>(screenY) - (worldViewport_.y + worldViewport_.h * 0.5f)) / scale
         },
         simulation.worldWidth(),
         simulation.worldHeight()
     );
+}
+
+void Renderer::beginWorldDrag(int screenX, int screenY) {
+    draggingWorld_ = true;
+    dragStartScreenX_ = screenX;
+    dragStartScreenY_ = screenY;
+    dragStartCamera_ = cameraCenter_;
+    followSelection_ = false;
+}
+
+void Renderer::updateWorldDrag(int screenX, int screenY, const Simulation& simulation) {
+    if (!draggingWorld_) {
+        return;
+    }
+    const float scale = worldScale(simulation);
+    if (scale <= 1e-5f) {
+        return;
+    }
+    cameraCenter_ = {
+        dragStartCamera_.x - (static_cast<float>(screenX - dragStartScreenX_) / scale),
+        dragStartCamera_.y - (static_cast<float>(screenY - dragStartScreenY_) / scale)
+    };
+    cameraInitialized_ = true;
+}
+
+void Renderer::endWorldDrag() {
+    draggingWorld_ = false;
+}
+
+bool Renderer::isDraggingWorld() const {
+    return draggingWorld_;
+}
+
+void Renderer::panCameraWorld(const Vec2& delta) {
+    if (std::abs(delta.x) <= 1e-5f && std::abs(delta.y) <= 1e-5f) {
+        return;
+    }
+    cameraCenter_ = cameraCenter_ + delta;
+    cameraInitialized_ = true;
+    followSelection_ = false;
+}
+
+float Renderer::zoomLevel() const {
+    return cameraZoom_;
 }
 
 bool Renderer::screenPointInSelection(int screenX, int screenY) const {
@@ -1071,9 +1121,10 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     newestLineageButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
     overlayButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
 
-    const float worldScale = std::min(worldViewport_.w / simulation.worldWidth(), worldViewport_.h / simulation.worldHeight()) * cameraZoom_;
-    const float visibleWorldWidth = worldViewport_.w / worldScale;
-    const float visibleWorldHeight = worldViewport_.h / worldScale;
+    const float scale = worldScale(simulation);
+    const float worldScale = scale;
+    const float visibleWorldWidth = worldViewport_.w / scale;
+    const float visibleWorldHeight = worldViewport_.h / scale;
 
     auto drawText = [&](TTF_Font* font, float x, float y, const std::string& text, SDL_Color color) {
         renderLabel(renderer_, font, x, y, text, color);
@@ -1788,7 +1839,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         smallFont_,
         summaryCard.x + 12.0f,
         summaryCard.y + 100.0f,
-        "overlay " + std::string(debugOverlayLabel()) + " (V)  zoom " + formatFloat(cameraZoom_, 1) + "x" + (followSelection_ ? "  follow on" : "  follow off"),
+        "overlay " + std::string(debugOverlayLabel()) + " (V)  zoom " + formatFloat(cameraZoom_, 1) + "x" + (followSelection_ ? "  track on" : "  track off"),
         {127, 153, 173, 255}
     );
     textY += summaryCard.h + 10.0f;
@@ -2001,7 +2052,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         drawText(smallFont_, selectionCard.x + 12.0f, sy + 26.0f, "selection shows body physics, chain stress proxies,", {125, 139, 155, 255});
         drawText(smallFont_, selectionCard.x + 12.0f, sy + 44.0f, "controller outputs, sensor activity, optional brain overlay,", {125, 139, 155, 255});
         drawText(smallFont_, selectionCard.x + 12.0f, sy + 62.0f, "and reef/substrate contact metrics.", {125, 139, 155, 255});
-        drawText(smallFont_, selectionCard.x + 12.0f, sy + 86.0f, "T toggles the brain panel. observer picks can follow lineages.", {125, 139, 155, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, sy + 86.0f, "drag empty water or use WASD to pan. T toggles the brain panel.", {125, 139, 155, 255});
     }
 
     setClipRect(renderer_, nullptr);
@@ -2034,7 +2085,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         smallFont_,
         controlsCard.x + 12.0f,
         controlsCard.y + 104.0f,
-        "wheel or +/- zooms. G follow. Z snap. T brain overlay.",
+        "drag/WASD pan. wheel or +/- zooms under cursor. G track. Z snap.",
         {154, 173, 190, 255}
     );
 

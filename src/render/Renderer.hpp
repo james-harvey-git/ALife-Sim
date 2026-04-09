@@ -37,11 +37,17 @@ public:
     void draw(const Simulation& simulation, bool paused, int timeScale);
     void cycleDebugOverlay();
     void scrollSelection(float deltaPixels);
-    void zoomView(float zoomSteps, const Simulation& simulation);
+    void zoomView(float zoomSteps, const Simulation& simulation, std::optional<SDL_Point> anchor = std::nullopt);
     void resetCamera(const Simulation& simulation);
     void focusSelection(const Simulation& simulation, bool snap = false);
-    void toggleFollowSelection();
+    void toggleFollowSelection(const Simulation& simulation);
     void toggleBrainOverlay();
+    void beginWorldDrag(int screenX, int screenY);
+    void updateWorldDrag(int screenX, int screenY, const Simulation& simulation);
+    void endWorldDrag();
+    bool isDraggingWorld() const;
+    void panCameraWorld(const Vec2& delta);
+    float zoomLevel() const;
 
     bool screenPointInWorld(int screenX, int screenY) const;
     bool screenPointInSelection(int screenX, int screenY) const;
@@ -72,11 +78,16 @@ private:
     float cameraZoom_ = 2.6f;
     Vec2 cameraCenter_ {0.0f, 0.0f};
     bool cameraInitialized_ = false;
-    bool followSelection_ = true;
+    bool followSelection_ = false;
     bool showBrainOverlay_ = false;
+    bool draggingWorld_ = false;
+    int dragStartScreenX_ = 0;
+    int dragStartScreenY_ = 0;
+    Vec2 dragStartCamera_ {0.0f, 0.0f};
 
     void updateViewport(const Simulation& simulation);
     void updateCamera(const Simulation& simulation);
+    float worldScale(const Simulation& simulation) const;
     Vec2 visibleWorldExtents(const Simulation& simulation) const;
     Vec2 wrappedPositionNearCamera(const Vec2& point, const Simulation& simulation) const;
     SDL_FPoint worldToScreen(const Vec2& world, const Simulation& simulation) const;
