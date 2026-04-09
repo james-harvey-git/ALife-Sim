@@ -24,7 +24,7 @@ using NodeKind = BrainGenome::NodeKind;
 using ConnectionGene = BrainGenome::ConnectionGene;
 
 constexpr char kSaveMagic[] = "ALIFESM1";
-constexpr std::uint32_t kSaveVersion = 3;
+constexpr std::uint32_t kSaveVersion = 4;
 
 template <typename T>
 bool writePod(std::ostream& stream, const T& value) {
@@ -627,6 +627,31 @@ float averageSegmentIntegrity(const Creature& creature, int startIndex, int endI
     return count > 0 ? total / static_cast<float>(count) : 1.0f;
 }
 
+Vec2 segmentForwardAxis(const Creature& creature, int segmentIndex, float worldWidth, float worldHeight) {
+    if (segmentIndex <= 0) {
+        return normalize(shortestWrappedDelta(
+            creature.bodyPoints[std::min(1, kBodySegments - 1)],
+            creature.bodyPoints[0],
+            worldWidth,
+            worldHeight
+        ));
+    }
+    if (segmentIndex >= kBodySegments - 1) {
+        return normalize(shortestWrappedDelta(
+            creature.bodyPoints[kBodySegments - 1],
+            creature.bodyPoints[kBodySegments - 2],
+            worldWidth,
+            worldHeight
+        ));
+    }
+    return normalize(shortestWrappedDelta(
+        creature.bodyPoints[segmentIndex + 1],
+        creature.bodyPoints[segmentIndex - 1],
+        worldWidth,
+        worldHeight
+    ));
+}
+
 DietClass classifyDiet(const Genome& genome) {
     const float grazerBias = genome.ecology.plantAffinity * 0.9f + (1.0f - genome.ecology.aggression) * 0.2f;
     const float hunterBias = genome.ecology.meatAffinity * 0.9f + genome.ecology.aggression * 0.25f
@@ -814,6 +839,15 @@ Traits deriveTraits(const Genome& genome) {
         traits.segmentLateralDragProfile[segmentIndex] = traits.segmentForwardDragProfile[segmentIndex]
             * (1.35f + localFinArea * 1.2f + traits.segmentRestRadii[segmentIndex] * 0.02f);
         traits.segmentDurability[segmentIndex] = 18.0f + traits.segmentMass[segmentIndex] * 2.4f + traits.segmentArmor[segmentIndex] * 13.0f;
+        traits.segmentSubstrateGrip[segmentIndex] = 0.22f
+            + localArmor * 0.32f
+            + genome.morphology.spikes * 0.3f
+            + finInfluence * 0.08f;
+        traits.segmentScrapeSensitivity[segmentIndex] = 0.55f
+            + (1.0f - localArmor) * 0.42f
+            + genome.morphology.spikes * 0.18f
+            + finInfluence * 0.42f
+            + genome.morphology.tailFlex * 0.12f;
 
         bodyMass += traits.segmentMass[segmentIndex];
         driveSum += traits.segmentDrive[segmentIndex] * (1.0f + finInfluence * 0.28f);
@@ -2202,6 +2236,9 @@ CreatureSnapshot Simulation::makeCreatureSnapshot(const Creature& creature) cons
         .meatAffinity = creature.genome.ecology.meatAffinity,
         .aggression = creature.genome.ecology.aggression,
         .substrateProximity = creature.substrateProximity,
+        .substrateContact = creature.substrateContact,
+        .substrateGrip = creature.substrateGrip,
+        .substrateScrape = creature.substrateScrape,
         .substrateShelter = creature.substrateShelter,
         .localShear = creature.localShear,
         .headIntegrity = segmentIntegrity(creature, 0),
@@ -2518,6 +2555,8 @@ SelectionInfo Simulation::selectionInfo() const {
     info.flowAlignment = it->flowAlignment;
     info.substrateProximity = it->substrateProximity;
     info.substrateContact = it->substrateContact;
+    info.substrateGrip = it->substrateGrip;
+    info.substrateScrape = it->substrateScrape;
     info.substrateShelter = it->substrateShelter;
     info.localShear = it->localShear;
     info.headIntegrity = segmentIntegrity(*it, 0);
@@ -2704,6 +2743,8 @@ void Simulation::step(float dt) {
         );
         creature.substrateProximity = std::max(habitat.proximity, habitat.contact);
         creature.substrateContact = habitat.contact;
+        creature.substrateGrip = 0.0f;
+        creature.substrateScrape = 0.0f;
         creature.substrateShelter = habitat.shelter;
         creature.localShear = sampleLocalShear(
             creature.position.x,
@@ -2790,7 +2831,13 @@ void Simulation::step(float dt) {
 
     std::vector<Vec2> reefPositionDelta(creatures_.size(), Vec2 {});
     std::vector<Vec2> reefVelocityDelta(creatures_.size(), Vec2 {});
+    std::vector<float> reefAngularDelta(creatures_.size(), 0.0f);
     std::vector<float> reefContact(creatures_.size(), 0.0f);
+    std::vector<float> reefGrip(creatures_.size(), 0.0f);
+    std::vector<float> reefScrape(creatures_.size(), 0.0f);
+    std::vector<float> reefEnergyDrain(creatures_.size(), 0.0f);
+    std::vector<float> reefHealthDrain(creatures_.size(), 0.0f);
+    std::vector<std::array<float, kBodySegments>> reefSegmentDamage(creatures_.size());
 
     for (std::size_t index = 0; index < creatures_.size(); ++index) {
         Creature& creature = creatures_[index];
@@ -2801,11 +2848,13 @@ void Simulation::step(float dt) {
         Vec2 positionDelta {};
         Vec2 velocityDelta {};
         float contactAmount = 0.0f;
+        float gripAmount = 0.0f;
+        float scrapeAmount = 0.0f;
+        float angularDelta = 0.0f;
+        float energyDrain = 0.0f;
+        float healthDrain = 0.0f;
 
         for (const Reef& reef : reefs_) {
-            float strongestOverlap = 0.0f;
-            Vec2 strongestNormal {1.0f, 0.0f};
-
             for (int segmentIndex = 0; segmentIndex < kBodySegments; ++segmentIndex) {
                 const Vec2 delta = shortestWrappedDelta(reef.position, creature.bodyPoints[segmentIndex], worldWidth_, worldHeight_);
                 const float distSq = lengthSquared(delta);
@@ -2816,27 +2865,54 @@ void Simulation::step(float dt) {
 
                 const float dist = std::sqrt(std::max(distSq, 1e-4f));
                 const float overlap = minDistance - dist;
-                if (overlap > strongestOverlap) {
-                    strongestOverlap = overlap;
-                    strongestNormal = delta / dist;
-                }
-            }
+                const Vec2 normal = delta / dist;
+                const Vec2 tangent {-normal.y, normal.x};
+                const Vec2 axis = segmentForwardAxis(creature, segmentIndex, worldWidth_, worldHeight_);
+                const float edgeAlign = std::abs(dot(axis, tangent));
+                const float contact = clamp01(overlap / (creature.bodyRadii[segmentIndex] * 0.65f + reef.radius * 0.04f + 1.0f));
+                const float integrity = segmentIntegrity(creature, segmentIndex);
+                const float grip = clamp01(
+                    creature.traits.segmentSubstrateGrip[segmentIndex]
+                    * (0.42f + edgeAlign * 0.58f)
+                    * (0.35f + integrity * 0.65f)
+                );
+                const float tangentSpeed = dot(creature.bodyVelocities[segmentIndex], tangent);
+                const float inwardSpeed = std::max(0.0f, -dot(creature.bodyVelocities[segmentIndex], normal));
+                const Vec2 lever = shortestWrappedDelta(creature.position, creature.bodyPoints[segmentIndex], worldWidth_, worldHeight_);
+                const Vec2 tangentialHold = tangent * (
+                    -tangentSpeed
+                    * (0.012f + grip * (0.03f + reef.roughness * 0.018f))
+                    * contact
+                );
+                const Vec2 normalResponse = normal * (overlap * (0.28f + reef.roughness * 0.18f));
 
-            if (strongestOverlap <= 0.0f) {
-                continue;
-            }
+                positionDelta = positionDelta + normalResponse * (0.85f - grip * 0.12f);
+                velocityDelta = velocityDelta + normal * (overlap * (0.32f + reef.roughness * 0.24f)) + tangentialHold;
+                angularDelta += cross(lever, tangentialHold + normalResponse * 0.12f) * 0.0007f;
+                contactAmount = std::max(contactAmount, contact);
+                gripAmount = std::max(gripAmount, contact * grip);
 
-            positionDelta = positionDelta + strongestNormal * (strongestOverlap * (0.36f + reef.roughness * 0.16f));
-            velocityDelta = velocityDelta + strongestNormal * (strongestOverlap * (0.45f + reef.roughness * 0.35f));
-            contactAmount = std::max(
-                contactAmount,
-                clamp01(strongestOverlap / (creature.traits.minorRadius * 0.8f + reef.radius * 0.06f + 1.0f))
-            );
+                const float scrapeStress = contact
+                    * (std::abs(tangentSpeed) * (0.008f + reef.roughness * 0.004f)
+                        + inwardSpeed * (0.012f + reef.roughness * 0.006f))
+                    * creature.traits.segmentScrapeSensitivity[segmentIndex]
+                    * dt;
+                reefSegmentDamage[index][segmentIndex] += scrapeStress;
+                energyDrain += contact * (0.04f + grip * 0.05f + creature.traits.mass * 0.0015f) * dt
+                    + scrapeStress * (0.8f + creature.traits.mass * 0.015f);
+                healthDrain += scrapeStress * 0.16f;
+                scrapeAmount = std::max(scrapeAmount, clamp01(scrapeStress * 4.0f));
+            }
         }
 
         reefPositionDelta[index] = positionDelta;
         reefVelocityDelta[index] = velocityDelta;
+        reefAngularDelta[index] = angularDelta;
         reefContact[index] = contactAmount;
+        reefGrip[index] = gripAmount;
+        reefScrape[index] = scrapeAmount;
+        reefEnergyDrain[index] = energyDrain;
+        reefHealthDrain[index] = healthDrain;
     }
 
     for (std::size_t index = 0; index < creatures_.size(); ++index) {
@@ -2847,14 +2923,22 @@ void Simulation::step(float dt) {
         Creature& creature = creatures_[index];
         creature.position = wrapPosition(creature.position + reefPositionDelta[index], worldWidth_, worldHeight_);
         translateBody(creature, reefPositionDelta[index], worldWidth_, worldHeight_);
-        const float damping = std::clamp(1.0f - reefContact[index] * 0.18f, 0.64f, 1.0f);
+        const float damping = std::clamp(1.0f - reefContact[index] * (0.08f + reefGrip[index] * 0.18f), 0.48f, 1.0f);
         creature.velocity = (creature.velocity + reefVelocityDelta[index]) * damping;
-        creature.angularVelocity *= damping;
+        creature.angularVelocity = (creature.angularVelocity + reefAngularDelta[index])
+            * std::clamp(1.0f - reefGrip[index] * 0.24f, 0.52f, 1.0f);
         for (Vec2& velocity : creature.bodyVelocities) {
-            velocity = (velocity + reefVelocityDelta[index]) * damping;
+            velocity = (velocity + reefVelocityDelta[index] * 0.45f) * damping;
         }
-        creature.energy -= reefContact[index] * (0.1f + creature.traits.mass * 0.004f) * dt;
+        for (int segmentIndex = 0; segmentIndex < kBodySegments; ++segmentIndex) {
+            creature.segmentDamage[segmentIndex] += reefSegmentDamage[index][segmentIndex];
+        }
+        creature.energy -= reefEnergyDrain[index];
+        creature.health -= reefHealthDrain[index];
         creature.substrateContact = std::max(creature.substrateContact, reefContact[index]);
+        creature.substrateGrip = std::max(creature.substrateGrip, reefGrip[index]);
+        creature.substrateScrape = std::max(creature.substrateScrape, reefScrape[index]);
+        stats_.energySpentOnUpkeep += reefEnergyDrain[index];
     }
 
     hash.clear();
@@ -3266,6 +3350,8 @@ void Simulation::step(float dt) {
     stats_.avgBrainComplexity = 0.0f;
     stats_.avgBrainConnections = 0.0f;
     stats_.avgSubstrateContact = 0.0f;
+    stats_.avgSubstrateGrip = 0.0f;
+    stats_.avgSubstrateScrape = 0.0f;
     stats_.avgSubstrateShelter = 0.0f;
     stats_.avgLocalShear = 0.0f;
     stats_.activeLineages = 0;
@@ -3284,6 +3370,8 @@ void Simulation::step(float dt) {
         stats_.avgBrainComplexity += brainComplexityScore(creature.genome.brain);
         stats_.avgBrainConnections += static_cast<float>(creature.genome.brain.connectionCount);
         stats_.avgSubstrateContact += creature.substrateContact;
+        stats_.avgSubstrateGrip += creature.substrateGrip;
+        stats_.avgSubstrateScrape += creature.substrateScrape;
         stats_.avgSubstrateShelter += creature.substrateShelter;
         stats_.avgLocalShear += creature.localShear;
 
@@ -3315,6 +3403,8 @@ void Simulation::step(float dt) {
     stats_.avgBrainComplexity /= divisor;
     stats_.avgBrainConnections /= divisor;
     stats_.avgSubstrateContact /= divisor;
+    stats_.avgSubstrateGrip /= divisor;
+    stats_.avgSubstrateScrape /= divisor;
     stats_.avgSubstrateShelter /= divisor;
     stats_.avgLocalShear /= divisor;
 
@@ -3345,6 +3435,8 @@ void Simulation::step(float dt) {
             .avgMass = stats_.avgMass,
             .avgBrainComplexity = stats_.avgBrainComplexity,
             .avgSubstrateContact = stats_.avgSubstrateContact,
+            .avgSubstrateGrip = stats_.avgSubstrateGrip,
+            .avgSubstrateScrape = stats_.avgSubstrateScrape,
             .avgSubstrateShelter = stats_.avgSubstrateShelter,
             .grazers = stats_.grazers,
             .omnivores = stats_.omnivores,

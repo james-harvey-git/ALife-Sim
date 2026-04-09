@@ -50,6 +50,7 @@ The long-term goal is not a scripted predator/prey toy. The goal is a watchable,
 - Toroidal world with a depletable substrate nutrient reservoir, current field, reef substrate, blooms, and carrion.
 - Sparse topology-evolving controller with innovation-aware structural mutations, bucketed sensory inputs, and recurrent memory channels.
 - Reef habitat modulates local flow, nutrient growth, and contact physics, and creatures now observe substrate proximity plus local shear.
+- Reef contact is now resolved per segment with morphology-derived hold vs scrape behavior, so some bodies brace or skim structure better while others grind themselves up on it.
 - Reef wakes now create lee-shelter niches downstream of structures, and creatures observe shelter as well as substrate proximity/contact and shear.
 - Grazers and blooms now compete over the same nutrient substrate, and reproduction is modulated by recent foraging success instead of only stored energy.
 - Branching lineage tracking for major brain-topology divergences so structural novelty can be observed as clades instead of anonymous drift.

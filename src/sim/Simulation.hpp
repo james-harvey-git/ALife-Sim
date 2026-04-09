@@ -137,6 +137,8 @@ struct Traits {
     std::array<float, kBodySegments> segmentLateralDragProfile {};
     std::array<float, kBodySegments> segmentArmor {};
     std::array<float, kBodySegments> segmentDurability {};
+    std::array<float, kBodySegments> segmentSubstrateGrip {};
+    std::array<float, kBodySegments> segmentScrapeSensitivity {};
 };
 
 struct Creature {
@@ -159,6 +161,8 @@ struct Creature {
     float flowAlignment = 0.0f;
     float substrateProximity = 0.0f;
     float substrateContact = 0.0f;
+    float substrateGrip = 0.0f;
+    float substrateScrape = 0.0f;
     float substrateShelter = 0.0f;
     float localShear = 0.0f;
     std::uint32_t lineageId = 0;
@@ -257,6 +261,8 @@ struct Stats {
     float avgBrainComplexity = 0.0f;
     float avgBrainConnections = 0.0f;
     float avgSubstrateContact = 0.0f;
+    float avgSubstrateGrip = 0.0f;
+    float avgSubstrateScrape = 0.0f;
     float avgSubstrateShelter = 0.0f;
     float avgLocalShear = 0.0f;
     float energyFromAmbientGrazing = 0.0f;
@@ -284,6 +290,8 @@ struct HistorySample {
     float avgMass = 0.0f;
     float avgBrainComplexity = 0.0f;
     float avgSubstrateContact = 0.0f;
+    float avgSubstrateGrip = 0.0f;
+    float avgSubstrateScrape = 0.0f;
     float avgSubstrateShelter = 0.0f;
     int grazers = 0;
     int omnivores = 0;
@@ -320,6 +328,8 @@ struct SelectionInfo {
     float flowAlignment = 0.0f;
     float substrateProximity = 0.0f;
     float substrateContact = 0.0f;
+    float substrateGrip = 0.0f;
+    float substrateScrape = 0.0f;
     float substrateShelter = 0.0f;
     float localShear = 0.0f;
     float headIntegrity = 0.0f;
@@ -374,6 +384,9 @@ struct CreatureSnapshot {
     float meatAffinity = 0.0f;
     float aggression = 0.0f;
     float substrateProximity = 0.0f;
+    float substrateContact = 0.0f;
+    float substrateGrip = 0.0f;
+    float substrateScrape = 0.0f;
     float substrateShelter = 0.0f;
     float localShear = 0.0f;
     float headIntegrity = 0.0f;

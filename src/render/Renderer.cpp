@@ -749,6 +749,24 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         const Vec2 forwardVector {std::cos(creature.angle), std::sin(creature.angle)};
         const Vec2 sideVector {-forwardVector.y, forwardVector.x};
 
+        if (creature.genome.morphology.spikes > 0.08f) {
+            const SDL_Color spineColor = tint(shell, 0.96f, 214);
+            for (int segmentIndex = 1; segmentIndex < kBodySegments - 1; ++segmentIndex) {
+                const SDL_FPoint front = wrappedPointToScreen(creature.bodyPoints[segmentIndex - 1]);
+                const SDL_FPoint back = wrappedPointToScreen(creature.bodyPoints[segmentIndex + 1]);
+                const Vec2 axis = normalize({front.x - back.x, front.y - back.y});
+                const Vec2 localSide {-axis.y, axis.x};
+                const SDL_FPoint center = wrappedPointToScreen(creature.bodyPoints[segmentIndex]);
+                const float radius = creature.bodyRadii[segmentIndex] * worldScale;
+                const float taper = 1.0f - static_cast<float>(segmentIndex) / static_cast<float>(kBodySegments - 1);
+                const float spikeExtent = radius * (0.16f + creature.genome.morphology.spikes * 0.38f) * (0.82f + taper * 0.24f);
+                const SDL_FPoint rootA {center.x - axis.x * radius * 0.16f, center.y - axis.y * radius * 0.16f};
+                const SDL_FPoint rootB {center.x + axis.x * radius * 0.16f, center.y + axis.y * radius * 0.16f};
+                const SDL_FPoint tip {center.x + localSide.x * spikeExtent, center.y + localSide.y * spikeExtent};
+                fillTriangle(renderer_, rootA, tip, rootB, spineColor);
+            }
+        }
+
         const int finLeadSegment = std::clamp(
             1 + static_cast<int>(std::round(creature.traits.finPlacement * static_cast<float>(kBodySegments - 2))),
             1,
@@ -1096,7 +1114,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     drawCard(selectionCard, "Selection");
     selectionViewport_ = {selectionCard.x + 10.0f, selectionCard.y + 32.0f, selectionCard.w - 20.0f, selectionCard.h - 42.0f};
 
-    const float selectionContentHeight = info.valid ? 359.0f : 150.0f;
+    const float selectionContentHeight = info.valid ? 377.0f : 150.0f;
     const float maxSelectionScroll = std::max(0.0f, selectionContentHeight - selectionViewport_.h);
     selectionScroll_ = std::clamp(selectionScroll_, 0.0f, maxSelectionScroll);
 
@@ -1163,7 +1181,16 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
             sy,
             "reef " + formatFloat(info.substrateProximity, 2)
                 + "  touch " + formatFloat(info.substrateContact, 2)
-                + "  lee " + formatFloat(info.substrateShelter, 2)
+                + "  hold " + formatFloat(info.substrateGrip, 2)
+                + "  scrape " + formatFloat(info.substrateScrape, 2),
+            {160, 194, 208, 255}
+        );
+        sy += 18.0f;
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "lee " + formatFloat(info.substrateShelter, 2)
                 + "  shear " + formatFloat(info.localShear, 2),
             {160, 194, 208, 255}
         );

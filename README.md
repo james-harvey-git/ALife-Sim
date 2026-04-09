@@ -43,14 +43,16 @@ The first playable milestone in this repo includes:
 - richer morphology genes for body taper, fin placement, tail length/forking, jaw offset, and armor distribution
 - per-segment drag, drive, stiffness, armor, durability, and mass profiles derived from morphology
 - regional damage that now penalizes head- and tail-dependent performance instead of being only a flat health number
+- per-segment reef contact response with morphology-derived hold vs scrape tradeoffs, so reef-hugging and open-water bodies interact differently with substrate
 - reef-aware observations including substrate proximity, lee shelter, and local shear
+- visible spine/scute cues for spike-heavy bodies so substrate-specialized contact traits are not hidden from the renderer
 - grazing, carrion feeding, and live predation
 - reproduction with mutation from a single ancestor genome, tempered by recent foraging success
 - branching lineage tracking for major brain-topology divergences
 - native HUD with history graphs, ecology drift readouts, lineage telemetry, live brain topology overlay, regional integrity readouts, and lineage-aware observer controls
 - scrollable selection inspector plus habitat-field overlay modes for QA and debugging
 
-This is intentionally still an early foundation. The sim has now entered Phase 1 of the roadmap with a first body-physics milestone: morphology drives segment-level hydrodynamics and regional injury, but the body is still a compact chain model rather than a fully constraint-solved multi-part organism. The next body-physics steps are deeper joint mechanics, more evolved body-plan freedom, and stronger substrate/contact specialization.
+This is intentionally still an early foundation. The sim is now partway into Phase 1 of the roadmap: morphology drives segment-level hydrodynamics, regional injury, and substrate-contact specialization, but the body is still a compact chain model rather than a fully constraint-solved multi-part organism. The next body-physics steps are deeper joint mechanics and more evolved body-plan freedom on top of this stronger reef/contact niche differentiation.
 
 Phase 0 of the roadmap is now in place: the sim has grouped configuration, state persistence that includes config/RNG/history, repeatable multi-seed headless runs, named benchmark presets, structured snapshots, and regression tests for smoke, save/load round-trip, and configured determinism.
 

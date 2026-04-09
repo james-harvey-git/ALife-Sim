@@ -277,6 +277,8 @@ struct RunSummary {
     float averageReproductionThreshold = 0.0f;
     float avgBrainLoad = 0.0f;
     float avgContact = 0.0f;
+    float avgGrip = 0.0f;
+    float avgScrape = 0.0f;
     float avgShelter = 0.0f;
     float avgShear = 0.0f;
     float feedAmbient = 0.0f;
@@ -300,6 +302,8 @@ struct BatchSummary {
     float meanLineages = 0.0f;
     float meanDominantLineageShare = 0.0f;
     float meanAverageEnergy = 0.0f;
+    float meanAverageGrip = 0.0f;
+    float meanAverageScrape = 0.0f;
     float meanAverageShelter = 0.0f;
 };
 
@@ -353,6 +357,8 @@ RunSummary runSummaryForSimulation(
     summary.dominantLineageShare = stats.dominantLineageShare;
     summary.avgBrainLoad = stats.avgBrainComplexity;
     summary.avgContact = stats.avgSubstrateContact;
+    summary.avgGrip = stats.avgSubstrateGrip;
+    summary.avgScrape = stats.avgSubstrateScrape;
     summary.avgShelter = stats.avgSubstrateShelter;
     summary.avgShear = stats.avgLocalShear;
     summary.feedAmbient = stats.energyFromAmbientGrazing;
@@ -398,6 +404,8 @@ BatchSummary summarizeBatchRuns(const std::vector<RunSummary>& runs) {
     float totalLineages = 0.0f;
     float totalDominantLineageShare = 0.0f;
     float totalAverageEnergy = 0.0f;
+    float totalAverageGrip = 0.0f;
+    float totalAverageScrape = 0.0f;
     float totalAverageShelter = 0.0f;
     double totalWallSeconds = 0.0;
     double totalSteps = 0.0;
@@ -410,6 +418,8 @@ BatchSummary summarizeBatchRuns(const std::vector<RunSummary>& runs) {
         totalLineages += static_cast<float>(run.activeLineages);
         totalDominantLineageShare += run.dominantLineageShare;
         totalAverageEnergy += run.averageEnergy;
+        totalAverageGrip += run.avgGrip;
+        totalAverageScrape += run.avgScrape;
         totalAverageShelter += run.avgShelter;
         totalWallSeconds += run.wallSeconds;
         totalSteps += static_cast<double>(run.steps);
@@ -427,6 +437,8 @@ BatchSummary summarizeBatchRuns(const std::vector<RunSummary>& runs) {
     summary.meanLineages = totalLineages / runCount;
     summary.meanDominantLineageShare = totalDominantLineageShare / runCount;
     summary.meanAverageEnergy = totalAverageEnergy / runCount;
+    summary.meanAverageGrip = totalAverageGrip / runCount;
+    summary.meanAverageScrape = totalAverageScrape / runCount;
     summary.meanAverageShelter = totalAverageShelter / runCount;
     return summary;
 }
@@ -449,6 +461,9 @@ void printTextCreatureSnapshot(const char* label, const alife::CreatureSnapshot&
         << " body=" << snapshot.majorRadius << "x" << snapshot.minorRadius
         << " head=" << snapshot.headIntegrity
         << " tail=" << snapshot.tailIntegrity
+        << " contact=" << snapshot.substrateContact
+        << " hold=" << snapshot.substrateGrip
+        << " scrape=" << snapshot.substrateScrape
         << " shelter=" << snapshot.substrateShelter
         << " shear=" << snapshot.localShear
         << '\n';
@@ -556,6 +571,9 @@ void printJsonCreatureSnapshot(const alife::CreatureSnapshot& snapshot) {
         << ",\"meat_affinity\":" << snapshot.meatAffinity
         << ",\"aggression\":" << snapshot.aggression
         << ",\"substrate_proximity\":" << snapshot.substrateProximity
+        << ",\"substrate_contact\":" << snapshot.substrateContact
+        << ",\"substrate_grip\":" << snapshot.substrateGrip
+        << ",\"substrate_scrape\":" << snapshot.substrateScrape
         << ",\"substrate_shelter\":" << snapshot.substrateShelter
         << ",\"head_integrity\":" << snapshot.headIntegrity
         << ",\"tail_integrity\":" << snapshot.tailIntegrity
@@ -628,6 +646,8 @@ void printSmokeSummary(const RunSummary& summary, bool snapshotOutput) {
         << " max_energy=" << summary.maxEnergy
         << " avg_brain_load=" << summary.avgBrainLoad
         << " avg_contact=" << summary.avgContact
+        << " avg_grip=" << summary.avgGrip
+        << " avg_scrape=" << summary.avgScrape
         << " avg_shelter=" << summary.avgShelter
         << " avg_shear=" << summary.avgShear
         << " feed_ambient=" << summary.feedAmbient
@@ -669,6 +689,8 @@ void printJsonRunSummary(const RunSummary& summary, bool snapshotOutput) {
         << ",\"max_energy\":" << summary.maxEnergy
         << ",\"avg_brain_load\":" << summary.avgBrainLoad
         << ",\"avg_contact\":" << summary.avgContact
+        << ",\"avg_grip\":" << summary.avgGrip
+        << ",\"avg_scrape\":" << summary.avgScrape
         << ",\"avg_shelter\":" << summary.avgShelter
         << ",\"avg_shear\":" << summary.avgShear
         << ",\"feed_ambient\":" << summary.feedAmbient
@@ -716,6 +738,7 @@ void printTextBatchSummary(
             << " lineages=" << run.activeLineages
             << " dom_lineage=" << run.dominantLineageShare
             << " avg_energy=" << run.averageEnergy
+            << " avg_grip=" << run.avgGrip
             << " avg_shelter=" << run.avgShelter
             << " wall_seconds=" << run.wallSeconds
             << " steps_per_second=" << run.stepsPerSecond
@@ -735,6 +758,8 @@ void printTextBatchSummary(
         << " mean_lineages=" << batch.meanLineages
         << " mean_dom_lineage=" << batch.meanDominantLineageShare
         << " mean_avg_energy=" << batch.meanAverageEnergy
+        << " mean_avg_grip=" << batch.meanAverageGrip
+        << " mean_avg_scrape=" << batch.meanAverageScrape
         << " mean_avg_shelter=" << batch.meanAverageShelter
         << '\n';
 }
@@ -772,6 +797,8 @@ void printJsonBatchSummary(
         << ",\"mean_lineages\":" << batch.meanLineages
         << ",\"mean_dominant_lineage_share\":" << batch.meanDominantLineageShare
         << ",\"mean_avg_energy\":" << batch.meanAverageEnergy
+        << ",\"mean_avg_grip\":" << batch.meanAverageGrip
+        << ",\"mean_avg_scrape\":" << batch.meanAverageScrape
         << ",\"mean_avg_shelter\":" << batch.meanAverageShelter
         << "}\n";
 }
