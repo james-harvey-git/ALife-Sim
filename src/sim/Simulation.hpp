@@ -20,7 +20,7 @@ constexpr int kSensorBuckets = 5;
 constexpr int kSensorChannels = 5;
 constexpr int kInternalInputs = 9;
 constexpr int kMemorySize = 4;
-constexpr int kBodySegments = 4;
+constexpr int kBodySegments = 6;
 constexpr int kInputCount = kSensorBuckets * kSensorChannels + kInternalInputs;
 constexpr int kMaxHiddenCount = 20;
 constexpr int kMaxConnectionCount = 128;
@@ -139,6 +139,8 @@ struct Traits {
     std::array<float, kBodySegments> segmentDurability {};
     std::array<float, kBodySegments> segmentSubstrateGrip {};
     std::array<float, kBodySegments> segmentScrapeSensitivity {};
+    std::array<float, kBodySegments> segmentJointRecoil {};
+    std::array<float, kBodySegments> segmentBendLimit {};
 };
 
 struct Creature {
@@ -159,6 +161,9 @@ struct Creature {
     float bodyCurvature = 0.0f;
     float bodySlip = 0.0f;
     float flowAlignment = 0.0f;
+    float bodyStrain = 0.0f;
+    float bodyCompression = 0.0f;
+    float propulsionCoupling = 0.0f;
     float substrateProximity = 0.0f;
     float substrateContact = 0.0f;
     float substrateGrip = 0.0f;
@@ -178,6 +183,7 @@ struct Creature {
     std::array<Vec2, kBodySegments> bodyVelocities {};
     std::array<float, kBodySegments> bodyRadii {};
     std::array<float, kBodySegments> segmentDamage {};
+    std::array<float, kBodySegments> jointStrain {};
 };
 
 struct Bloom {
@@ -326,6 +332,9 @@ struct SelectionInfo {
     float bodyCurvature = 0.0f;
     float bodySlip = 0.0f;
     float flowAlignment = 0.0f;
+    float bodyStrain = 0.0f;
+    float bodyCompression = 0.0f;
+    float propulsionCoupling = 0.0f;
     float substrateProximity = 0.0f;
     float substrateContact = 0.0f;
     float substrateGrip = 0.0f;
@@ -389,6 +398,9 @@ struct CreatureSnapshot {
     float substrateScrape = 0.0f;
     float substrateShelter = 0.0f;
     float localShear = 0.0f;
+    float bodyStrain = 0.0f;
+    float bodyCompression = 0.0f;
+    float propulsionCoupling = 0.0f;
     float headIntegrity = 0.0f;
     float tailIntegrity = 0.0f;
 };

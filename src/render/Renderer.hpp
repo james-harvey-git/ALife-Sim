@@ -39,6 +39,7 @@ public:
     void resetCamera(const Simulation& simulation);
     void focusSelection(const Simulation& simulation, bool snap = false);
     void toggleFollowSelection();
+    void toggleBrainOverlay();
 
     bool screenPointInWorld(int screenX, int screenY) const;
     bool screenPointInSelection(int screenX, int screenY) const;
@@ -70,6 +71,7 @@ private:
     Vec2 cameraCenter_ {0.0f, 0.0f};
     bool cameraInitialized_ = false;
     bool followSelection_ = true;
+    bool showBrainOverlay_ = false;
 
     void updateViewport(const Simulation& simulation);
     void updateCamera(const Simulation& simulation);

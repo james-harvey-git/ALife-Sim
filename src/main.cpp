@@ -466,6 +466,9 @@ void printTextCreatureSnapshot(const char* label, const alife::CreatureSnapshot&
         << " scrape=" << snapshot.substrateScrape
         << " shelter=" << snapshot.substrateShelter
         << " shear=" << snapshot.localShear
+        << " strain=" << snapshot.bodyStrain
+        << " comp=" << snapshot.bodyCompression
+        << " couple=" << snapshot.propulsionCoupling
         << '\n';
 }
 
@@ -578,6 +581,9 @@ void printJsonCreatureSnapshot(const alife::CreatureSnapshot& snapshot) {
         << ",\"head_integrity\":" << snapshot.headIntegrity
         << ",\"tail_integrity\":" << snapshot.tailIntegrity
         << ",\"local_shear\":" << snapshot.localShear
+        << ",\"body_strain\":" << snapshot.bodyStrain
+        << ",\"body_compression\":" << snapshot.bodyCompression
+        << ",\"propulsion_coupling\":" << snapshot.propulsionCoupling
         << "}";
 }
 
@@ -958,6 +964,9 @@ int main(int argc, char** argv) {
                             break;
                         case SDLK_g:
                             renderer.toggleFollowSelection();
+                            break;
+                        case SDLK_t:
+                            renderer.toggleBrainOverlay();
                             break;
                         case SDLK_z:
                             renderer.focusSelection(simulation, true);

@@ -24,7 +24,7 @@ using NodeKind = BrainGenome::NodeKind;
 using ConnectionGene = BrainGenome::ConnectionGene;
 
 constexpr char kSaveMagic[] = "ALIFESM1";
-constexpr std::uint32_t kSaveVersion = 4;
+constexpr std::uint32_t kSaveVersion = 6;
 
 template <typename T>
 bool writePod(std::ostream& stream, const T& value) {
@@ -176,6 +176,15 @@ Vec2 normalize(const Vec2& value) {
     return value / len;
 }
 
+Vec2 rotate(const Vec2& value, float radians) {
+    const float c = std::cos(radians);
+    const float s = std::sin(radians);
+    return {
+        value.x * c - value.y * s,
+        value.x * s + value.y * c
+    };
+}
+
 float wrapAxis(float value, float extent) {
     while (value < 0.0f) {
         value += extent;
@@ -232,10 +241,12 @@ float sampleNutrientField(float x, float y, float timeSeconds) {
 }
 
 Vec2 sampleCurrentField(float x, float y, float timeSeconds) {
-    const float flowX = std::sin(y * 0.0053f + timeSeconds * 0.33f) * 22.0f
-        + std::cos((x + y) * 0.0017f - timeSeconds * 0.18f) * 10.0f;
-    const float flowY = std::cos(x * 0.0042f - timeSeconds * 0.21f) * 18.0f
-        + std::sin((x - y) * 0.0021f + timeSeconds * 0.12f) * 8.0f;
+    // Keep currents ecologically meaningful, but no longer so dominant that
+    // active swimmers read as passive drift particles.
+    const float flowX = std::sin(y * 0.0053f + timeSeconds * 0.33f) * 13.5f
+        + std::cos((x + y) * 0.0017f - timeSeconds * 0.18f) * 6.0f;
+    const float flowY = std::cos(x * 0.0042f - timeSeconds * 0.21f) * 11.0f
+        + std::sin((x - y) * 0.0021f + timeSeconds * 0.12f) * 5.0f;
     return {flowX, flowY};
 }
 
@@ -783,6 +794,7 @@ BrainDistance compareBrains(const BrainGenome& lhs, const BrainGenome& rhs) {
 
 Traits deriveTraits(const Genome& genome) {
     Traits traits {};
+    const float segmentLengthFactor = 4.0f / static_cast<float>(kBodySegments - 1);
 
     const float coreRadius = lerp(8.0f, 18.0f, genome.morphology.coreSize);
     const float elongation = lerp(1.0f, 1.85f, genome.morphology.elongation);
@@ -795,7 +807,9 @@ Traits deriveTraits(const Genome& genome) {
     traits.majorRadius = coreRadius * elongation;
     traits.minorRadius = coreRadius / lerp(1.0f, 1.32f, genome.morphology.elongation);
     traits.finSpan = traits.minorRadius * lerp(0.7f, 1.65f, genome.morphology.finArea);
-    traits.segmentSpacing = lerp(7.0f, 15.0f, genome.morphology.elongation) * (0.9f + genome.morphology.coreSize * 0.45f);
+    traits.segmentSpacing = lerp(7.0f, 15.0f, genome.morphology.elongation)
+        * (0.9f + genome.morphology.coreSize * 0.45f)
+        * segmentLengthFactor;
     traits.tailLengthScale = lerp(0.74f, 1.42f, genome.morphology.tailLength);
     traits.finPlacement = genome.morphology.finPlacement;
     traits.tailFork = lerp(0.2f, 1.15f, genome.morphology.tailFork);
@@ -820,6 +834,9 @@ Traits deriveTraits(const Genome& genome) {
             const float radiusScale = std::lerp(0.92f, 0.18f, rearBias);
             traits.segmentRestRadii[segmentIndex] = traits.minorRadius * radiusScale;
             traits.segmentSpacingScale[segmentIndex] = std::lerp(0.92f, traits.tailLengthScale, std::pow(t, 1.35f));
+            const float minSpacingScale = ((traits.segmentRestRadii[segmentIndex - 1] + traits.segmentRestRadii[segmentIndex]) * 0.58f)
+                / std::max(traits.segmentSpacing, 1.0f);
+            traits.segmentSpacingScale[segmentIndex] = std::max(traits.segmentSpacingScale[segmentIndex], minSpacingScale);
             bodyCoverage += traits.segmentSpacing * traits.segmentSpacingScale[segmentIndex];
         }
 
@@ -829,7 +846,8 @@ Traits deriveTraits(const Genome& genome) {
         const float localFinArea = 0.7f + finInfluence * genome.morphology.finArea * 1.4f;
         const float localArea = traits.segmentRestRadii[segmentIndex] * traits.segmentRestRadii[segmentIndex] * kPi;
         traits.segmentArmor[segmentIndex] = 0.75f + localArmor * 1.25f;
-        traits.segmentMass[segmentIndex] = (localArea * 0.065f + 1.2f) * (0.9f + localArmor * 0.55f);
+        traits.segmentMass[segmentIndex] = (localArea * 0.065f * segmentLengthFactor + 0.95f)
+            * (0.9f + localArmor * 0.55f);
         traits.segmentDrive[segmentIndex] = std::pow(t, 1.15f) * (0.22f + genome.morphology.tailFlex * 1.45f)
             * (0.7f + traits.tailLengthScale * 0.45f);
         traits.segmentJointStiffness[segmentIndex] = (7.5f + localArmor * 11.0f)
@@ -848,12 +866,17 @@ Traits deriveTraits(const Genome& genome) {
             + genome.morphology.spikes * 0.18f
             + finInfluence * 0.42f
             + genome.morphology.tailFlex * 0.12f;
+        traits.segmentJointRecoil[segmentIndex] = (0.16f + genome.morphology.tailFlex * 0.7f)
+            * std::lerp(0.7f, 1.22f, t);
+        traits.segmentBendLimit[segmentIndex] = std::lerp(0.18f, 0.95f, genome.morphology.tailFlex)
+            * std::lerp(0.72f, 1.35f, t)
+            * std::lerp(0.86f, 0.64f, localArmor);
 
         bodyMass += traits.segmentMass[segmentIndex];
-        driveSum += traits.segmentDrive[segmentIndex] * (1.0f + finInfluence * 0.28f);
+        driveSum += traits.segmentDrive[segmentIndex] * (1.0f + finInfluence * 0.28f) * segmentLengthFactor;
         forwardDragSum += traits.segmentForwardDragProfile[segmentIndex];
         lateralDragSum += traits.segmentLateralDragProfile[segmentIndex];
-        angularLeverage += t * traits.segmentDrive[segmentIndex] * (0.8f + finInfluence * 0.45f);
+        angularLeverage += t * traits.segmentDrive[segmentIndex] * (0.8f + finInfluence * 0.45f) * segmentLengthFactor;
     }
 
     traits.collisionRadius = bodyCoverage * 0.58f + spikeBonus * 0.25f;
@@ -1230,11 +1253,11 @@ Genome makeAncestorGenome(
     genome.morphology.coreSize = 0.55f;
     genome.morphology.elongation = 0.42f;
     genome.morphology.bodyTaper = 0.48f;
-    genome.morphology.finArea = 0.58f;
+    genome.morphology.finArea = 0.34f;
     genome.morphology.finPlacement = 0.46f;
     genome.morphology.tailFlex = 0.56f;
     genome.morphology.tailLength = 0.52f;
-    genome.morphology.tailFork = 0.44f;
+    genome.morphology.tailFork = 0.24f;
     genome.morphology.armor = 0.24f;
     genome.morphology.armorDistribution = 0.36f;
     genome.morphology.jawLength = 0.48f;
@@ -1242,7 +1265,7 @@ Genome makeAncestorGenome(
     genome.morphology.jawOffset = 0.42f;
     genome.morphology.sensorSpan = 0.64f;
     genome.morphology.sensorRange = 0.57f;
-    genome.morphology.spikes = 0.18f;
+    genome.morphology.spikes = 0.04f;
     genome.morphology.hue = 0.58f;
     genome.morphology.pattern = 0.48f;
 
@@ -1567,6 +1590,22 @@ float segmentSpacingFor(const Creature& creature, int segmentIndex) {
         * lerp(0.88f, 1.0f, integrity);
 }
 
+float targetSegmentSway(const Creature& creature, int segmentIndex, float thrustDrive) {
+    const float t = static_cast<float>(segmentIndex) / static_cast<float>(kBodySegments - 1);
+    const float integrity = segmentIntegrity(creature, segmentIndex);
+    return std::sin(creature.gaitPhase - t * 1.45f)
+        * creature.traits.tailWaveAmplitude
+        * lerp(0.2f, 1.1f, t)
+        * creature.traits.segmentDrive[segmentIndex]
+        * (0.35f + thrustDrive * 0.65f)
+        * (0.25f + integrity * 0.75f);
+}
+
+Vec2 targetSegmentDirection(const Creature& creature, int segmentIndex, const Vec2& parentAxis, float thrustDrive) {
+    const Vec2 parentSide {-parentAxis.y, parentAxis.x};
+    return normalize(parentAxis - parentSide * targetSegmentSway(creature, segmentIndex, thrustDrive));
+}
+
 void computeBodyObservables(
     Creature& creature,
     float worldWidth,
@@ -1574,6 +1613,7 @@ void computeBodyObservables(
     float timeSeconds,
     const std::vector<Reef>& reefs
 ) {
+    const float thrustDrive = clamp01(std::abs(creature.outputs[1]));
     float curvature = 0.0f;
     int curvatureCount = 0;
     for (int segmentIndex = 1; segmentIndex < kBodySegments - 1; ++segmentIndex) {
@@ -1620,6 +1660,48 @@ void computeBodyObservables(
     } else {
         creature.flowAlignment = 0.5f + 0.5f * dot(normalize(meanCurrent), facing);
     }
+
+    float totalStrain = 0.0f;
+    float totalCompression = 0.0f;
+    float totalCoupling = 0.0f;
+    for (int segmentIndex = 1; segmentIndex < kBodySegments; ++segmentIndex) {
+        const float spacing = std::max(segmentSpacingFor(creature, segmentIndex), 1e-4f);
+        const Vec2 delta = shortestWrappedDelta(
+            creature.bodyPoints[segmentIndex - 1],
+            creature.bodyPoints[segmentIndex],
+            worldWidth,
+            worldHeight
+        );
+        float distance = length(delta);
+        Vec2 currentDir = distance > 1e-4f ? delta / distance : facing * -1.0f;
+        if (distance <= 1e-4f) {
+            distance = spacing;
+        }
+        const Vec2 parentAxis = segmentIndex == 1
+            ? facing
+            : normalize(shortestWrappedDelta(
+                creature.bodyPoints[segmentIndex - 2],
+                creature.bodyPoints[segmentIndex - 1],
+                worldWidth,
+                worldHeight
+            ));
+        const Vec2 targetDir = targetSegmentDirection(creature, segmentIndex, parentAxis, thrustDrive);
+        const Vec2 relaxedDir = targetDir * -1.0f;
+        const float stretchStrain = std::abs(distance - spacing) / spacing;
+        const float compression = std::max(0.0f, spacing - distance) / spacing;
+        const float bendError = std::abs(wrapAngle(std::atan2(currentDir.y, currentDir.x) - std::atan2(relaxedDir.y, relaxedDir.x)));
+        const float bendLimit = std::max(creature.traits.segmentBendLimit[segmentIndex], 0.08f);
+        const float strain = clamp01(stretchStrain * 1.7f + bendError / bendLimit * 0.65f);
+        creature.jointStrain[segmentIndex] = strain;
+        totalStrain += strain;
+        totalCompression += compression;
+        totalCoupling += clamp01(std::abs(cross(parentAxis, currentDir)) * (0.65f + creature.traits.segmentDrive[segmentIndex] * 0.35f));
+    }
+    creature.jointStrain[0] = 0.0f;
+    const float jointCount = static_cast<float>(kBodySegments - 1);
+    creature.bodyStrain = totalStrain / jointCount;
+    creature.bodyCompression = totalCompression / jointCount;
+    creature.propulsionCoupling = totalCoupling / jointCount;
 }
 
 void seedBodyPose(Creature& creature, float worldWidth, float worldHeight, const std::vector<Reef>& reefs) {
@@ -1628,11 +1710,15 @@ void seedBodyPose(Creature& creature, float worldWidth, float worldHeight, const
     creature.bodyVelocities[0] = creature.velocity;
 
     for (int segmentIndex = 1; segmentIndex < kBodySegments; ++segmentIndex) {
-        const float t = static_cast<float>(segmentIndex) / static_cast<float>(kBodySegments - 1);
-        const float sway = std::sin(creature.gaitPhase - t * 1.3f)
-            * creature.traits.tailWaveAmplitude
-            * creature.traits.segmentDrive[segmentIndex];
-        const Vec2 direction {std::cos(creature.angle + sway), std::sin(creature.angle + sway)};
+        const Vec2 parentAxis = segmentIndex == 1
+            ? Vec2 {std::cos(creature.angle), std::sin(creature.angle)}
+            : normalize(shortestWrappedDelta(
+                creature.bodyPoints[segmentIndex - 2],
+                creature.bodyPoints[segmentIndex - 1],
+                worldWidth,
+                worldHeight
+            ));
+        const Vec2 direction = targetSegmentDirection(creature, segmentIndex, parentAxis, 1.0f);
         const float spacing = segmentSpacingFor(creature, segmentIndex);
         creature.bodyPoints[segmentIndex] = wrapPosition(
             creature.bodyPoints[segmentIndex - 1] - direction * spacing,
@@ -1683,14 +1769,7 @@ void integrateBodyChain(
         const Vec2 parentAxis = segmentIndex == 1
             ? facing
             : normalize(shortestWrappedDelta(previousPoints[segmentIndex], previousPoints[segmentIndex - 1], worldWidth, worldHeight));
-        const Vec2 parentSide {-parentAxis.y, parentAxis.x};
-        const float sway = std::sin(creature.gaitPhase - t * 1.45f)
-            * creature.traits.tailWaveAmplitude
-            * lerp(0.2f, 1.1f, t)
-            * creature.traits.segmentDrive[segmentIndex]
-            * (0.35f + thrustDrive * 0.65f)
-            * (0.25f + integrity * 0.75f);
-        const Vec2 desiredDir = normalize(parentAxis - parentSide * sway);
+        const Vec2 desiredDir = targetSegmentDirection(creature, segmentIndex, parentAxis, thrustDrive);
         const Vec2 desiredPoint = creature.bodyPoints[segmentIndex - 1] - desiredDir * spacing;
         const Vec2 currentAtSegment = sampleCurrentWithReefs(
             previousPoints[segmentIndex].x,
@@ -1702,14 +1781,14 @@ void integrateBodyChain(
         );
         const Vec2 deltaToTarget = shortestWrappedDelta(previousPoints[segmentIndex], desiredPoint, worldWidth, worldHeight);
         const Vec2 axis = normalize(shortestWrappedDelta(previousPoints[segmentIndex - 1], previousPoints[segmentIndex], worldWidth, worldHeight));
-        const Vec2 normal {-axis.y, axis.x};
+        const Vec2 localNormal {-axis.y, axis.x};
         const Vec2 relativeVelocity = previousVelocities[segmentIndex] - currentAtSegment;
         const float axisVelocity = dot(relativeVelocity, axis);
-        const float normalVelocity = dot(relativeVelocity, normal);
+        const float normalVelocity = dot(relativeVelocity, localNormal);
         const Vec2 spring = deltaToTarget * creature.traits.segmentJointStiffness[segmentIndex] * (0.45f + integrity * 0.55f);
         const Vec2 dragForce = axis * (-axisVelocity * std::abs(axisVelocity) * creature.traits.segmentForwardDragProfile[segmentIndex] * 0.08f)
-            + normal * (-normalVelocity * std::abs(normalVelocity) * creature.traits.segmentLateralDragProfile[segmentIndex] * 0.1f);
-        const Vec2 tailDrive = normal
+            + localNormal * (-normalVelocity * std::abs(normalVelocity) * creature.traits.segmentLateralDragProfile[segmentIndex] * 0.1f);
+        const Vec2 tailDrive = localNormal
             * (std::sin(creature.gaitPhase - t * 1.18f)
                 * creature.traits.segmentDrive[segmentIndex]
                 * creature.traits.forwardThrust
@@ -1726,12 +1805,12 @@ void integrateBodyChain(
         creature.bodyRadii[segmentIndex] = creature.traits.segmentRestRadii[segmentIndex] * lerp(0.8f, 1.0f, integrity);
     }
 
-    for (int iteration = 0; iteration < 2; ++iteration) {
-        creature.bodyPoints[0] = creature.position;
+    for (int iteration = 0; iteration < 3; ++iteration) {
         for (int segmentIndex = 1; segmentIndex < kBodySegments; ++segmentIndex) {
             const float spacing = segmentSpacingFor(creature, segmentIndex);
+            const int parentIndex = segmentIndex - 1;
             Vec2 delta = shortestWrappedDelta(
-                creature.bodyPoints[segmentIndex - 1],
+                creature.bodyPoints[parentIndex],
                 creature.bodyPoints[segmentIndex],
                 worldWidth,
                 worldHeight
@@ -1741,15 +1820,84 @@ void integrateBodyChain(
                 delta = facing * -spacing;
                 distance = spacing;
             }
-            creature.bodyPoints[segmentIndex] = wrapPosition(
-                creature.bodyPoints[segmentIndex - 1] + delta * (spacing / distance),
+            const Vec2 currentDir = delta / distance;
+            const float distanceError = distance - spacing;
+            const Vec2 spacingCorrection = currentDir * distanceError;
+            const float parentIntegrity = segmentIntegrity(creature, parentIndex);
+            const float childIntegrity = segmentIntegrity(creature, segmentIndex);
+            const float parentInverseMass = (parentIndex == 0 ? 0.72f : 1.0f)
+                / std::max(creature.traits.segmentMass[parentIndex] * (0.38f + parentIntegrity * 0.62f), 1.0f);
+            const float childInverseMass = 1.0f
+                / std::max(creature.traits.segmentMass[segmentIndex] * (0.38f + childIntegrity * 0.62f), 1.0f);
+            const float totalInverseMass = std::max(parentInverseMass + childInverseMass, 1e-4f);
+            const float parentShare = parentInverseMass / totalInverseMass;
+            const float childShare = childInverseMass / totalInverseMass;
+            const Vec2 parentAxis = parentIndex == 0
+                ? facing
+                : normalize(shortestWrappedDelta(
+                    creature.bodyPoints[parentIndex - 1],
+                    creature.bodyPoints[parentIndex],
+                    worldWidth,
+                    worldHeight
+                ));
+            const Vec2 desiredDir = targetSegmentDirection(creature, segmentIndex, parentAxis, thrustDrive);
+            const Vec2 desiredPoint = creature.bodyPoints[parentIndex] - desiredDir * spacing;
+            const Vec2 offsetToTarget = shortestWrappedDelta(
+                creature.bodyPoints[segmentIndex],
+                desiredPoint,
                 worldWidth,
                 worldHeight
             );
+            const Vec2 bendCorrection = (offsetToTarget - currentDir * dot(offsetToTarget, currentDir))
+                * std::clamp(creature.traits.segmentJointStiffness[segmentIndex] * 0.011f, 0.08f, 0.42f);
+            const Vec2 parentDelta = spacingCorrection * parentShare - bendCorrection * parentShare * 0.55f;
+            const Vec2 childDelta = spacingCorrection * (-childShare) + bendCorrection * childShare;
+
+            creature.bodyPoints[parentIndex] = wrapPosition(creature.bodyPoints[parentIndex] + parentDelta, worldWidth, worldHeight);
+            creature.bodyPoints[segmentIndex] = wrapPosition(creature.bodyPoints[segmentIndex] + childDelta, worldWidth, worldHeight);
+
+            const float recoilScale = creature.traits.segmentJointRecoil[segmentIndex] / std::max(dt, 1e-4f) * 0.24f;
+            creature.bodyVelocities[parentIndex] = creature.bodyVelocities[parentIndex] + parentDelta * recoilScale;
+            creature.bodyVelocities[segmentIndex] = creature.bodyVelocities[segmentIndex] + childDelta * recoilScale;
         }
     }
 
     for (int segmentIndex = 1; segmentIndex < kBodySegments; ++segmentIndex) {
+        const int parentIndex = segmentIndex - 1;
+        const float spacing = segmentSpacingFor(creature, segmentIndex);
+        const Vec2 parentAxis = parentIndex == 0
+            ? facing
+            : normalize(shortestWrappedDelta(
+                creature.bodyPoints[parentIndex - 1],
+                creature.bodyPoints[parentIndex],
+                worldWidth,
+                worldHeight
+            ));
+        const Vec2 relaxedDir = targetSegmentDirection(creature, segmentIndex, parentAxis, thrustDrive) * -1.0f;
+        Vec2 delta = shortestWrappedDelta(
+            creature.bodyPoints[parentIndex],
+            creature.bodyPoints[segmentIndex],
+            worldWidth,
+            worldHeight
+        );
+        if (lengthSquared(delta) < 1e-6f) {
+            delta = relaxedDir * spacing;
+        }
+        const float bend = wrapAngle(std::atan2(delta.y, delta.x) - std::atan2(relaxedDir.y, relaxedDir.x));
+        const float bendLimit = std::max(creature.traits.segmentBendLimit[segmentIndex], 0.08f) * 1.05f;
+        const float clampedBend = std::clamp(bend, -bendLimit, bendLimit);
+        const Vec2 clampedDir = rotate(relaxedDir, clampedBend);
+        creature.bodyPoints[segmentIndex] = wrapPosition(
+            creature.bodyPoints[parentIndex] + clampedDir * spacing,
+            worldWidth,
+            worldHeight
+        );
+    }
+
+    creature.position = wrapPosition(creature.bodyPoints[0], worldWidth, worldHeight);
+    creature.bodyVelocities[0] = shortestWrappedDelta(previousPoints[0], creature.bodyPoints[0], worldWidth, worldHeight) / std::max(dt, 1e-4f);
+
+    for (int segmentIndex = 0; segmentIndex < kBodySegments; ++segmentIndex) {
         const Vec2 displacement = shortestWrappedDelta(
             previousPoints[segmentIndex],
             creature.bodyPoints[segmentIndex],
@@ -2241,6 +2389,9 @@ CreatureSnapshot Simulation::makeCreatureSnapshot(const Creature& creature) cons
         .substrateScrape = creature.substrateScrape,
         .substrateShelter = creature.substrateShelter,
         .localShear = creature.localShear,
+        .bodyStrain = creature.bodyStrain,
+        .bodyCompression = creature.bodyCompression,
+        .propulsionCoupling = creature.propulsionCoupling,
         .headIntegrity = segmentIntegrity(creature, 0),
         .tailIntegrity = averageSegmentIntegrity(creature, std::max(1, kBodySegments - 2), kBodySegments)
     };
@@ -2553,6 +2704,9 @@ SelectionInfo Simulation::selectionInfo() const {
     info.bodyCurvature = it->bodyCurvature;
     info.bodySlip = it->bodySlip;
     info.flowAlignment = it->flowAlignment;
+    info.bodyStrain = it->bodyStrain;
+    info.bodyCompression = it->bodyCompression;
+    info.propulsionCoupling = it->propulsionCoupling;
     info.substrateProximity = it->substrateProximity;
     info.substrateContact = it->substrateContact;
     info.substrateGrip = it->substrateGrip;
@@ -2773,7 +2927,7 @@ void Simulation::step(float dt) {
     for (Creature& creature : creatures_) {
         const float headIntegrity = segmentIntegrity(creature, 0);
         const float midIntegrity = averageSegmentIntegrity(creature, 1, kBodySegments - 1);
-        const float tailIntegrity = averageSegmentIntegrity(creature, std::max(1, kBodySegments - 2), kBodySegments);
+        const float tailIntegrity = averageSegmentIntegrity(creature, std::max(1, kBodySegments - 3), kBodySegments);
         const float turnInput = creature.outputs[0] * (0.35f + midIntegrity * 0.65f);
         const float thrustInput = creature.outputs[1] * (0.28f + tailIntegrity * 0.72f);
         const float signalDrive = outputDrive(creature.outputs[4]);
@@ -2788,7 +2942,12 @@ void Simulation::step(float dt) {
 
         creature.gaitPhase += dt * (2.2f + outputDrive(thrustInput) * (1.0f + creature.genome.morphology.tailFlex * 3.2f));
         const float tailPulse = 0.82f + 0.18f * std::sin(creature.gaitPhase);
-        forwardVelocity += thrustInput * creature.traits.forwardThrust * tailPulse * (0.52f + tailIntegrity * 0.24f) * dt;
+        const float swimCoupling = 0.34f + creature.propulsionCoupling * 0.92f;
+        forwardVelocity += thrustInput
+            * creature.traits.forwardThrust
+            * tailPulse
+            * (0.36f + tailIntegrity * 0.28f + swimCoupling * 0.38f)
+            * dt;
         forwardVelocity *= std::exp(-creature.traits.forwardDrag * dt);
         lateralVelocity *= std::exp(-creature.traits.lateralDrag * dt);
 
@@ -2805,12 +2964,31 @@ void Simulation::step(float dt) {
 
         integrateBodyChain(creature, dt, worldWidth_, worldHeight_, timeSeconds_, reefs_);
 
+        // Keep the controller heading coupled to the actual body posture so
+        // selected creatures do not look like their body and control frame are
+        // fighting each other.
+        const Vec2 bodyForward = normalize(shortestWrappedDelta(
+            creature.bodyPoints[1],
+            creature.bodyPoints[0],
+            worldWidth_,
+            worldHeight_
+        ));
+        const float bodyHeading = std::atan2(bodyForward.y, bodyForward.x);
+        const float headingError = wrapAngle(bodyHeading - creature.angle);
+        creature.angularVelocity = creature.angularVelocity * 0.82f + headingError * 1.6f;
+        creature.angle = wrapAngle(creature.angle + headingError * 0.32f);
+
         const float movementCost = creature.traits.upkeep * dt
             * (0.48f + std::abs(thrustInput) * 0.46f + std::abs(turnInput) * 0.22f + creature.signal * 0.24f
                 + creature.bodySlip * 0.08f + creature.bodyCurvature * 0.025f
+                + creature.bodyStrain * 0.14f + creature.bodyCompression * 0.08f
                 + (1.0f - tailIntegrity) * 0.1f + (1.0f - midIntegrity) * 0.06f);
         creature.energy -= movementCost;
         stats_.energySpentOnUpkeep += movementCost;
+
+        if (creature.bodyStrain > 0.72f) {
+            creature.health -= (creature.bodyStrain - 0.72f) * (0.38f + creature.traits.mass * 0.002f) * dt;
+        }
 
         if (creature.energy > creature.traits.reproductionThreshold * 0.62f) {
             creature.health = std::min(creature.traits.maxHealth, creature.health + dt * (1.0f + creature.genome.morphology.armor * 2.0f));

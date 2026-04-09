@@ -204,6 +204,39 @@ void fillTriangle(SDL_Renderer* renderer, SDL_FPoint a, SDL_FPoint b, SDL_FPoint
     SDL_RenderGeometry(renderer, nullptr, vertices.data(), 3, indices.data(), 3);
 }
 
+void fillPolygon(SDL_Renderer* renderer, const std::vector<SDL_FPoint>& points, SDL_Color color) {
+    if (points.size() < 3) {
+        return;
+    }
+
+    SDL_FPoint centroid {};
+    for (const SDL_FPoint& point : points) {
+        centroid.x += point.x;
+        centroid.y += point.y;
+    }
+    centroid.x /= static_cast<float>(points.size());
+    centroid.y /= static_cast<float>(points.size());
+
+    std::vector<SDL_Vertex> vertices;
+    std::vector<int> indices;
+    vertices.reserve(points.size() + 1);
+    indices.reserve(points.size() * 3);
+
+    vertices.push_back({centroid, color, {0.0f, 0.0f}});
+    for (const SDL_FPoint& point : points) {
+        vertices.push_back({point, color, {0.0f, 0.0f}});
+    }
+
+    for (int index = 1; index <= static_cast<int>(points.size()); ++index) {
+        const int next = index == static_cast<int>(points.size()) ? 1 : index + 1;
+        indices.push_back(0);
+        indices.push_back(index);
+        indices.push_back(next);
+    }
+
+    drawTexturedFan(renderer, vertices, indices);
+}
+
 void drawLine(SDL_Renderer* renderer, SDL_FPoint a, SDL_FPoint b, SDL_Color color) {
     setColor(renderer, color);
     SDL_RenderDrawLineF(renderer, a.x, a.y, b.x, b.y);
@@ -352,6 +385,10 @@ void Renderer::focusSelection(const Simulation& simulation, bool snap) {
 
 void Renderer::toggleFollowSelection() {
     followSelection_ = !followSelection_;
+}
+
+void Renderer::toggleBrainOverlay() {
+    showBrainOverlay_ = !showBrainOverlay_;
 }
 
 void Renderer::zoomView(float zoomSteps, const Simulation& simulation) {
@@ -693,9 +730,9 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
             lerp(0.42f, 0.82f, creature.genome.morphology.armor),
             lerp(0.7f, 0.96f, creature.genome.ecology.plantAffinity)
         );
-        const SDL_Color accent = hsv(creature.genome.morphology.hue + 0.07f, 0.58f, 0.98f, 220);
-        const SDL_Color shell = tint(body, 0.62f, 255);
-        const SDL_Color shadow = tint(body, 0.42f, 160);
+        const SDL_Color accent = hsv(creature.genome.morphology.hue + 0.07f, 0.34f, 0.9f, 176);
+        const SDL_Color shell = tint(body, 0.78f, 244);
+        const SDL_Color shadow = tint(body, 0.34f, 138);
         const SDL_Color eye = hsv(0.14f, 0.18f, 0.98f);
 
         const SDL_FPoint head = worldToScreen(creature.bodyPoints[0], simulation);
@@ -719,6 +756,33 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
                 head.y + delta.y * worldScale
             };
         };
+        std::array<SDL_FPoint, kBodySegments> screenPoints {};
+        for (int segmentIndex = 0; segmentIndex < kBodySegments; ++segmentIndex) {
+            screenPoints[segmentIndex] = wrappedPointToScreen(creature.bodyPoints[segmentIndex]);
+        }
+        const auto nosewardAxisAt = [&](int segmentIndex) {
+            Vec2 axis {};
+            if (segmentIndex <= 0) {
+                axis = {
+                    screenPoints[0].x - screenPoints[1].x,
+                    screenPoints[0].y - screenPoints[1].y
+                };
+            } else if (segmentIndex >= kBodySegments - 1) {
+                axis = {
+                    screenPoints[kBodySegments - 2].x - screenPoints[kBodySegments - 1].x,
+                    screenPoints[kBodySegments - 2].y - screenPoints[kBodySegments - 1].y
+                };
+            } else {
+                axis = {
+                    screenPoints[segmentIndex - 1].x - screenPoints[segmentIndex + 1].x,
+                    screenPoints[segmentIndex - 1].y - screenPoints[segmentIndex + 1].y
+                };
+            }
+            if (lengthSquared(axis) < 1e-4f) {
+                return normalize(Vec2 {std::cos(creature.angle), std::sin(creature.angle)});
+            }
+            return normalize(axis);
+        };
         const SDL_FPoint trailEnd {
             head.x - creature.velocity.x * worldScale * 0.05f,
             head.y - creature.velocity.y * worldScale * 0.05f
@@ -730,36 +794,82 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
             fillEllipse(renderer_, head.x, head.y, aura, aura * 0.84f, {88, 180, 214, static_cast<std::uint8_t>(18 + creature.signal * 28.0f)});
         }
 
-        for (int segmentIndex = kBodySegments - 1; segmentIndex >= 0; --segmentIndex) {
-            const SDL_FPoint point = wrappedPointToScreen(creature.bodyPoints[segmentIndex]);
-            const float radius = creature.bodyRadii[segmentIndex] * worldScale;
-            const float shade = lerp(0.78f, 1.05f, 1.0f - static_cast<float>(segmentIndex) / static_cast<float>(kBodySegments - 1));
-            const float integrity = segmentIntegrity(segmentIndex);
-            SDL_Color segmentColor = tint(body, shade * lerp(0.7f, 1.0f, integrity), 240);
-            if (integrity < 0.92f) {
-                const SDL_Color wound = hsv(0.015f, 0.72f, lerp(0.36f, 0.74f, 1.0f - integrity), 210);
-                segmentColor.r = static_cast<std::uint8_t>((static_cast<int>(segmentColor.r) + static_cast<int>(wound.r)) / 2);
-                segmentColor.g = static_cast<std::uint8_t>((static_cast<int>(segmentColor.g) + static_cast<int>(wound.g)) / 2);
-                segmentColor.b = static_cast<std::uint8_t>((static_cast<int>(segmentColor.b) + static_cast<int>(wound.b)) / 2);
-            }
-            fillEllipse(renderer_, point.x, point.y, radius * 1.08f, radius * 0.9f, segmentColor);
-            fillEllipse(renderer_, point.x - radius * 0.12f, point.y, radius * 0.56f, radius * 0.42f, shadow);
+        for (int segmentIndex = 1; segmentIndex < kBodySegments; ++segmentIndex) {
+            const SDL_FPoint start = screenPoints[segmentIndex - 1];
+            const SDL_FPoint end = screenPoints[segmentIndex];
+            const float strain = clamp01(creature.jointStrain[segmentIndex]);
+            const SDL_Color jointColor = strain > 0.54f
+                ? SDL_Color {228, static_cast<std::uint8_t>(128 + strain * 48.0f), 108, static_cast<std::uint8_t>(selected ? 182 : 118)}
+                : SDL_Color {static_cast<std::uint8_t>(92 + strain * 78.0f), static_cast<std::uint8_t>(130 + strain * 46.0f), static_cast<std::uint8_t>(168 + strain * 38.0f), static_cast<std::uint8_t>(selected ? 154 : 82)};
+            drawLine(renderer_, start, end, jointColor);
         }
 
-        const Vec2 forwardVector {std::cos(creature.angle), std::sin(creature.angle)};
-        const Vec2 sideVector {-forwardVector.y, forwardVector.x};
+        const Vec2 headAxis = nosewardAxisAt(0);
+        const Vec2 headSide {-headAxis.y, headAxis.x};
+        const float headRadius = creature.bodyRadii[0] * worldScale;
+        for (int segmentIndex = kBodySegments - 1; segmentIndex >= 1; --segmentIndex) {
+            const SDL_FPoint start = screenPoints[segmentIndex - 1];
+            const SDL_FPoint end = screenPoints[segmentIndex];
+            Vec2 axis {
+                end.x - start.x,
+                end.y - start.y
+            };
+            axis = lengthSquared(axis) < 1e-4f ? headAxis * -1.0f : normalize(axis);
+            const Vec2 side {-axis.y, axis.x};
+            const float startRadius = creature.bodyRadii[segmentIndex - 1] * worldScale
+                * (segmentIndex == 1 ? 0.88f : 0.76f);
+            const float endRadius = creature.bodyRadii[segmentIndex] * worldScale * 0.72f;
+            const float shade = lerp(0.72f, 0.98f, 1.0f - static_cast<float>(segmentIndex - 1) / static_cast<float>(kBodySegments - 1));
+            const SDL_Color stripColor = tint(body, shade, 228);
+            fillPolygon(
+                renderer_,
+                {
+                    {start.x + side.x * startRadius, start.y + side.y * startRadius},
+                    {start.x - side.x * startRadius, start.y - side.y * startRadius},
+                    {end.x - side.x * endRadius, end.y - side.y * endRadius},
+                    {end.x + side.x * endRadius, end.y + side.y * endRadius}
+                },
+                stripColor
+            );
+        }
+        for (int segmentIndex = kBodySegments - 1; segmentIndex >= 0; --segmentIndex) {
+            const SDL_FPoint point = screenPoints[segmentIndex];
+            const float radius = creature.bodyRadii[segmentIndex] * worldScale;
+            const float integrity = segmentIntegrity(segmentIndex);
+            const float fullness = segmentIndex == 0 ? 0.92f : lerp(0.6f, 0.82f, 1.0f - static_cast<float>(segmentIndex) / static_cast<float>(kBodySegments - 1));
+            const SDL_Color segmentColor = tint(body, lerp(0.78f, 1.02f, integrity), 232);
+            fillEllipse(renderer_, point.x, point.y, radius * fullness, radius * fullness * 0.82f, segmentColor);
+            const SDL_Color core = tint(body, lerp(0.46f, 0.66f, integrity), 132);
+            fillEllipse(renderer_, point.x, point.y, radius * 0.42f, radius * 0.28f, core);
+            const Vec2 axis = nosewardAxisAt(segmentIndex);
+            fillEllipse(
+                renderer_,
+                point.x - axis.x * radius * 0.14f - headSide.x * radius * 0.04f,
+                point.y - axis.y * radius * 0.14f - headSide.y * radius * 0.04f,
+                radius * 0.34f,
+                radius * 0.18f,
+                shadow
+            );
+        }
+        const SDL_FPoint noseTip {head.x + headAxis.x * headRadius * 0.92f, head.y + headAxis.y * headRadius * 0.92f};
+        const SDL_FPoint noseTop {head.x + headSide.x * headRadius * 0.46f - headAxis.x * headRadius * 0.18f, head.y + headSide.y * headRadius * 0.46f - headAxis.y * headRadius * 0.18f};
+        const SDL_FPoint noseBottom {head.x - headSide.x * headRadius * 0.46f - headAxis.x * headRadius * 0.18f, head.y - headSide.y * headRadius * 0.46f - headAxis.y * headRadius * 0.18f};
+        fillTriangle(renderer_, noseTop, noseTip, noseBottom, tint(body, 1.06f, 236));
 
-        if (creature.genome.morphology.spikes > 0.08f) {
-            const SDL_Color spineColor = tint(shell, 0.96f, 214);
+        const Vec2 forwardVector = headAxis;
+        const Vec2 sideVector = headSide;
+
+        if (creature.genome.morphology.spikes > 0.35f) {
+            const SDL_Color spineColor = tint(shell, 0.92f, 172);
             for (int segmentIndex = 1; segmentIndex < kBodySegments - 1; ++segmentIndex) {
-                const SDL_FPoint front = wrappedPointToScreen(creature.bodyPoints[segmentIndex - 1]);
-                const SDL_FPoint back = wrappedPointToScreen(creature.bodyPoints[segmentIndex + 1]);
+                const SDL_FPoint front = screenPoints[segmentIndex - 1];
+                const SDL_FPoint back = screenPoints[segmentIndex + 1];
                 const Vec2 axis = normalize({front.x - back.x, front.y - back.y});
                 const Vec2 localSide {-axis.y, axis.x};
-                const SDL_FPoint center = wrappedPointToScreen(creature.bodyPoints[segmentIndex]);
+                const SDL_FPoint center = screenPoints[segmentIndex];
                 const float radius = creature.bodyRadii[segmentIndex] * worldScale;
                 const float taper = 1.0f - static_cast<float>(segmentIndex) / static_cast<float>(kBodySegments - 1);
-                const float spikeExtent = radius * (0.16f + creature.genome.morphology.spikes * 0.38f) * (0.82f + taper * 0.24f);
+                const float spikeExtent = radius * (0.08f + creature.genome.morphology.spikes * 0.18f) * (0.76f + taper * 0.18f);
                 const SDL_FPoint rootA {center.x - axis.x * radius * 0.16f, center.y - axis.y * radius * 0.16f};
                 const SDL_FPoint rootB {center.x + axis.x * radius * 0.16f, center.y + axis.y * radius * 0.16f};
                 const SDL_FPoint tip {center.x + localSide.x * spikeExtent, center.y + localSide.y * spikeExtent};
@@ -772,66 +882,112 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
             1,
             kBodySegments - 2
         );
-        const Vec2 finBaseA = creature.bodyPoints[finLeadSegment];
-        const Vec2 finBaseB = creature.bodyPoints[std::min(kBodySegments - 1, finLeadSegment + 1)];
+        const SDL_FPoint finBaseA = screenPoints[finLeadSegment];
+        const SDL_FPoint finBaseB = screenPoints[std::min(kBodySegments - 1, finLeadSegment + 1)];
         const float finIntegrity = 0.5f * (segmentIntegrity(finLeadSegment) + segmentIntegrity(std::min(kBodySegments - 1, finLeadSegment + 1)));
-        const Vec2 finTipTop = finBaseA + sideVector * creature.traits.finSpan * lerp(0.55f, 1.0f, finIntegrity)
-            - forwardVector * creature.traits.segmentSpacing * 0.2f;
-        const Vec2 finTipBottom = finBaseA - sideVector * creature.traits.finSpan * lerp(0.55f, 1.0f, finIntegrity)
-            - forwardVector * creature.traits.segmentSpacing * 0.2f;
-        fillTriangle(renderer_, wrappedPointToScreen(finBaseA), wrappedPointToScreen(finTipTop), wrappedPointToScreen(finBaseB), accent);
-        fillTriangle(renderer_, wrappedPointToScreen(finBaseA), wrappedPointToScreen(finTipBottom), wrappedPointToScreen(finBaseB), accent);
-
-        const Vec2 tailBase = creature.bodyPoints[kBodySegments - 1];
-        const Vec2 tailAnchor = creature.bodyPoints[kBodySegments - 2];
-        Vec2 wrappedTailDelta {
-            tailBase.x - tailAnchor.x,
-            tailBase.y - tailAnchor.y
+        const Vec2 finAxis = nosewardAxisAt(finLeadSegment);
+        const Vec2 finSide {-finAxis.y, finAxis.x};
+        const SDL_FPoint finRoot {
+            (finBaseA.x + finBaseB.x) * 0.5f,
+            (finBaseA.y + finBaseB.y) * 0.5f
         };
-        if (wrappedTailDelta.x > simulation.worldWidth() * 0.5f) {
-            wrappedTailDelta.x -= simulation.worldWidth();
-        } else if (wrappedTailDelta.x < -simulation.worldWidth() * 0.5f) {
-            wrappedTailDelta.x += simulation.worldWidth();
+        const float finExpressiveness = clamp01((creature.genome.morphology.finArea - 0.18f) / 0.82f);
+        if (finExpressiveness > 0.08f) {
+            const float finSpan = creature.traits.finSpan * worldScale * lerp(0.18f, 0.42f, finIntegrity) * finExpressiveness;
+            const float finSweep = creature.traits.segmentSpacing * worldScale * 0.42f;
+            const SDL_FPoint finRootFront {
+                finRoot.x + finAxis.x * finSweep * 0.2f,
+                finRoot.y + finAxis.y * finSweep * 0.2f
+            };
+            const SDL_FPoint finRootBack {
+                finRoot.x - finAxis.x * finSweep * 0.36f,
+                finRoot.y - finAxis.y * finSweep * 0.36f
+            };
+            const SDL_FPoint finTipTop {
+                finRoot.x + finSide.x * finSpan - finAxis.x * finSweep * 0.34f,
+                finRoot.y + finSide.y * finSpan - finAxis.y * finSweep * 0.34f
+            };
+            fillTriangle(renderer_, finRootFront, finTipTop, finRootBack, tint(accent, 0.82f, 132));
+            if (finExpressiveness > 0.58f) {
+                const SDL_FPoint finTipBottom {
+                    finRoot.x - finSide.x * finSpan * 0.72f - finAxis.x * finSweep * 0.28f,
+                    finRoot.y - finSide.y * finSpan * 0.72f - finAxis.y * finSweep * 0.28f
+                };
+                fillTriangle(renderer_, finRootFront, finTipBottom, finRootBack, tint(accent, 0.7f, 112));
+            }
         }
-        if (wrappedTailDelta.y > simulation.worldHeight() * 0.5f) {
-            wrappedTailDelta.y -= simulation.worldHeight();
-        } else if (wrappedTailDelta.y < -simulation.worldHeight() * 0.5f) {
-            wrappedTailDelta.y += simulation.worldHeight();
-        }
-        const Vec2 tailDirection = normalize(wrappedTailDelta);
+
+        const SDL_FPoint tailBase = screenPoints[kBodySegments - 1];
+        const Vec2 tailDirection = nosewardAxisAt(kBodySegments - 1) * -1.0f;
         const Vec2 tailSide {-tailDirection.y, tailDirection.x};
         const float tailIntegrity = segmentIntegrity(kBodySegments - 1);
-        const float tailSpan = creature.bodyRadii[kBodySegments - 1] * (0.72f + creature.traits.tailFork * 0.28f)
-            * lerp(0.55f, 1.0f, tailIntegrity);
-        const float tailLength = creature.traits.segmentSpacing * (1.25f + creature.traits.tailLengthScale * 1.1f);
+        const float tailSpan = creature.bodyRadii[kBodySegments - 1] * worldScale * (0.42f + creature.traits.tailFork * 0.18f)
+            * lerp(0.58f, 1.0f, tailIntegrity);
+        const float tailLength = creature.traits.segmentSpacing * worldScale * (0.72f + creature.traits.tailLengthScale * 0.54f);
         const float forkSeparation = tailSpan * (0.16f + creature.traits.tailFork * 0.22f);
-        const Vec2 rootTop = tailBase + tailSide * tailSpan * 0.48f;
-        const Vec2 rootBottom = tailBase - tailSide * tailSpan * 0.48f;
-        const Vec2 tailCenter = tailBase - tailDirection * (tailLength * 0.34f);
-        const Vec2 topTip = tailBase - tailDirection * tailLength + tailSide * forkSeparation;
-        const Vec2 bottomTip = tailBase - tailDirection * tailLength - tailSide * forkSeparation;
-        fillTriangle(renderer_, wrappedPointToScreen(rootTop), wrappedPointToScreen(tailCenter), wrappedPointToScreen(rootBottom), tint(accent, 0.62f, 168));
-        fillTriangle(renderer_, wrappedPointToScreen(rootTop), wrappedPointToScreen(topTip), wrappedPointToScreen(tailCenter), tint(accent, 0.94f, 224));
-        fillTriangle(renderer_, wrappedPointToScreen(tailCenter), wrappedPointToScreen(bottomTip), wrappedPointToScreen(rootBottom), tint(accent, 0.94f, 224));
-        drawLine(renderer_, wrappedPointToScreen(tailBase), wrappedPointToScreen(tailCenter), tint(shell, 1.05f, 156));
+        const SDL_FPoint tailRoot {
+            tailBase.x + tailDirection.x * tailSpan * 0.35f,
+            tailBase.y + tailDirection.y * tailSpan * 0.35f
+        };
+        const SDL_FPoint rootTop {tailRoot.x + tailSide.x * tailSpan * 0.45f, tailRoot.y + tailSide.y * tailSpan * 0.45f};
+        const SDL_FPoint rootBottom {tailRoot.x - tailSide.x * tailSpan * 0.45f, tailRoot.y - tailSide.y * tailSpan * 0.45f};
+        const SDL_FPoint tailCenter {
+            tailRoot.x + tailDirection.x * (tailLength * 0.24f),
+            tailRoot.y + tailDirection.y * (tailLength * 0.24f)
+        };
+        const SDL_FPoint topTip {
+            tailRoot.x + tailDirection.x * tailLength + tailSide.x * (tailSpan + forkSeparation),
+            tailRoot.y + tailDirection.y * tailLength + tailSide.y * (tailSpan + forkSeparation)
+        };
+        const SDL_FPoint bottomTip {
+            tailRoot.x + tailDirection.x * tailLength - tailSide.x * (tailSpan + forkSeparation),
+            tailRoot.y + tailDirection.y * tailLength - tailSide.y * (tailSpan + forkSeparation)
+        };
+        fillTriangle(renderer_, rootTop, tailCenter, rootBottom, tint(accent, 0.55f, 156));
+        fillTriangle(renderer_, rootTop, topTip, tailCenter, tint(accent, 0.92f, 206));
+        fillTriangle(renderer_, tailCenter, bottomTip, rootBottom, tint(accent, 0.92f, 206));
+        drawLine(renderer_, tailBase, tailCenter, tint(shell, 1.05f, 148));
 
-        const Vec2 jawBase = creature.bodyPoints[0] + forwardVector * (creature.bodyRadii[0] * (0.48f + creature.traits.jawOffset));
-        const Vec2 jawTip = jawBase + forwardVector * (creature.traits.biteReach * 0.55f);
-        const Vec2 jawSide = sideVector * (creature.bodyRadii[0] * lerp(0.2f, 0.5f, creature.genome.morphology.jawArc));
-        fillTriangle(renderer_, wrappedPointToScreen(jawBase + jawSide), wrappedPointToScreen(jawTip), wrappedPointToScreen(jawBase - jawSide), shell);
+        const SDL_FPoint jawBase {
+            head.x + forwardVector.x * (headRadius * (0.48f + creature.traits.jawOffset)),
+            head.y + forwardVector.y * (headRadius * (0.48f + creature.traits.jawOffset))
+        };
+        const SDL_FPoint jawTip {
+            jawBase.x + forwardVector.x * (creature.traits.biteReach * worldScale * 0.22f),
+            jawBase.y + forwardVector.y * (creature.traits.biteReach * worldScale * 0.22f)
+        };
+        const Vec2 jawSide = sideVector * (headRadius * lerp(0.18f, 0.34f, creature.genome.morphology.jawArc));
+        fillTriangle(
+            renderer_,
+            {jawBase.x + jawSide.x, jawBase.y + jawSide.y},
+            jawTip,
+            {jawBase.x - jawSide.x, jawBase.y - jawSide.y},
+            shell
+        );
 
-        const SDL_FPoint eyePoint = wrappedPointToScreen(creature.bodyPoints[0] + forwardVector * creature.bodyRadii[0] * 0.18f - sideVector * creature.bodyRadii[0] * 0.24f);
+        const SDL_FPoint eyePoint {
+            head.x + forwardVector.x * headRadius * 0.18f - sideVector.x * headRadius * 0.24f,
+            head.y + forwardVector.y * headRadius * 0.18f - sideVector.y * headRadius * 0.24f
+        };
         fillEllipse(renderer_, eyePoint.x, eyePoint.y, 2.8f, 2.8f, eye);
         fillEllipse(renderer_, eyePoint.x + 0.6f, eyePoint.y, 1.0f, 1.0f, {14, 16, 20, 255});
 
         if (creature.genome.morphology.pattern < 0.5f) {
-            fillEllipse(renderer_, head.x - creature.bodyRadii[0] * worldScale * 0.16f, head.y + creature.bodyRadii[0] * worldScale * 0.12f, 3.2f, 2.2f, shadow);
-            const SDL_FPoint torso = wrappedPointToScreen(creature.bodyPoints[1]);
-            fillEllipse(renderer_, torso.x + creature.bodyRadii[1] * worldScale * 0.1f, torso.y - 1.0f, 2.6f, 1.8f, shadow);
+            fillEllipse(renderer_, head.x - headSide.x * headRadius * 0.12f, head.y - headSide.y * headRadius * 0.12f, 3.2f, 2.2f, shadow);
+            const SDL_FPoint torso = screenPoints[1];
+            fillEllipse(renderer_, torso.x + headSide.x * 2.0f, torso.y + headSide.y * 2.0f, 2.8f, 1.9f, shadow);
         } else {
             for (int segmentIndex = 0; segmentIndex < kBodySegments; ++segmentIndex) {
-                const SDL_FPoint point = wrappedPointToScreen(creature.bodyPoints[segmentIndex]);
-                fillEllipse(renderer_, point.x, point.y - creature.bodyRadii[segmentIndex] * worldScale * 0.24f, creature.bodyRadii[segmentIndex] * worldScale * 0.22f, 1.5f, shadow);
+                const SDL_FPoint point = screenPoints[segmentIndex];
+                const Vec2 axis = nosewardAxisAt(segmentIndex);
+                fillEllipse(
+                    renderer_,
+                    point.x - axis.x * creature.bodyRadii[segmentIndex] * worldScale * 0.18f,
+                    point.y - axis.y * creature.bodyRadii[segmentIndex] * worldScale * 0.18f,
+                    creature.bodyRadii[segmentIndex] * worldScale * 0.18f,
+                    1.5f,
+                    shadow
+                );
             }
         }
 
@@ -1029,7 +1185,9 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
             drawCreature(creature, true);
         }
     }
-    drawBrainOverlay(info);
+    if (showBrainOverlay_) {
+        drawBrainOverlay(info);
+    }
     SDL_RenderSetClipRect(renderer_, nullptr);
 
     const SDL_FRect panel {
@@ -1114,7 +1272,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     drawCard(selectionCard, "Selection");
     selectionViewport_ = {selectionCard.x + 10.0f, selectionCard.y + 32.0f, selectionCard.w - 20.0f, selectionCard.h - 42.0f};
 
-    const float selectionContentHeight = info.valid ? 377.0f : 150.0f;
+    const float selectionContentHeight = info.valid ? 395.0f : 150.0f;
     const float maxSelectionScroll = std::max(0.0f, selectionContentHeight - selectionViewport_.h);
     selectionScroll_ = std::clamp(selectionScroll_, 0.0f, maxSelectionScroll);
 
@@ -1174,6 +1332,16 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "upkeep " + formatFloat(info.upkeep, 1) + "  repro " + formatFloat(info.reproductionThreshold, 1), {179, 194, 210, 255});
         sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "slip " + formatFloat(info.bodySlip, 2) + "  curve " + formatFloat(info.bodyCurvature, 2) + "  flow " + formatFloat(info.flowAlignment, 2), {179, 194, 210, 255});
+        sy += 18.0f;
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "strain " + formatFloat(info.bodyStrain, 2)
+                + "  comp " + formatFloat(info.bodyCompression, 2)
+                + "  couple " + formatFloat(info.propulsionCoupling, 2),
+            {186, 196, 220, 255}
+        );
         sy += 18.0f;
         drawText(
             smallFont_,
@@ -1252,9 +1420,9 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         const float sy = selectionViewport_.y + 8.0f - selectionScroll_;
         drawText(font_, selectionCard.x + 12.0f, sy, "click a creature to inspect it", {184, 192, 201, 255});
         drawText(smallFont_, selectionCard.x + 12.0f, sy + 26.0f, "selection shows body physics, chain stress proxies,", {125, 139, 155, 255});
-        drawText(smallFont_, selectionCard.x + 12.0f, sy + 44.0f, "controller outputs, topology overlay, sensor activity,", {125, 139, 155, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, sy + 44.0f, "controller outputs, sensor activity, optional brain overlay,", {125, 139, 155, 255});
         drawText(smallFont_, selectionCard.x + 12.0f, sy + 62.0f, "and reef/substrate contact metrics.", {125, 139, 155, 255});
-        drawText(smallFont_, selectionCard.x + 12.0f, sy + 86.0f, "observer picks can lock onto dominant or newly branched lineages.", {125, 139, 155, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, sy + 86.0f, "T toggles the brain panel. observer picks can follow lineages.", {125, 139, 155, 255});
     }
 
     SDL_RenderSetClipRect(renderer_, nullptr);
@@ -1287,7 +1455,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         smallFont_,
         controlsCard.x + 12.0f,
         controlsCard.y + 104.0f,
-        "wheel over world or +/- zooms. G toggles follow. Z snaps to subject.",
+        "wheel or +/- zooms. G follow. Z snap. T brain overlay.",
         {154, 173, 190, 255}
     );
 
