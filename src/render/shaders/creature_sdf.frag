@@ -71,6 +71,12 @@ float smin(float a, float b, float k) {
     return mix(b, a, h) - k * h * (1.0 - h);
 }
 
+float sdCapsule(vec2 p, vec2 a, vec2 b, float r) {
+    vec2 pa = p - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h) - r;
+}
+
 float sdTaperedCapsule(vec2 p, vec2 a, vec2 b, float rA, float rB) {
     vec2 pa = p - a, ba = b - a;
     float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
@@ -332,6 +338,49 @@ void main() {
     vec3 col = mix(baseCol, innerCol, inner * 0.55);
     col = mix(col, rimCol, rim * 0.5);
     col += energyCol * energy * 0.12 * inner;
+
+    // Per-segment damage visualization
+    if (uLodTier == 0) {
+        for (int s = 0; s < 6; s++) {
+            float integrity = fetchFloat(ci, 26 + s);
+            if (integrity < 0.95) {
+                vec2 segP = fetchSegPos(ci, s);
+                float segR = fetchSegRadius(ci, s);
+                float segDist = sdCircle(vFragPos - segP, segR);
+                float segInfluence = smoothstep(0.0, -segR * 0.8, segDist);
+
+                float dmg = 1.0 - integrity;
+                vec3 damageCol = hsl2rgb(hue - 0.05, sat * 0.3, lit * 0.4);
+                col = mix(col, damageCol, segInfluence * dmg * 0.6);
+            }
+        }
+    }
+
+    // Body markings
+    if (uLodTier == 0) {
+        float pattern = fetchFloat(ci, 48);
+        if (pattern < 0.5) {
+            int markCount = (pattern < 0.25) ? 3 : 2;
+            for (int m = 0; m < 3; m++) {
+                if (m >= markCount) break;
+                int markSeg = 1 + m;
+                vec2 mPos = fetchSegPos(ci, markSeg);
+                float mR = fetchSegRadius(ci, markSeg);
+                vec2 mDir = fetchSegPos(ci, markSeg - 1) - mPos;
+                float mDirLen = length(mDir);
+                vec2 mAxis = (mDirLen > 0.001) ? mDir / mDirLen : vec2(1.0, 0.0);
+                vec2 mPerp = vec2(-mAxis.y, mAxis.x);
+
+                vec2 markCenter = mPos + mPerp * mR * 0.4;
+                float markW = mR * 0.5;
+                float markH = mR * 0.25;
+                float markDist = sdCapsule(vFragPos, markCenter - mAxis * markH, markCenter + mAxis * markH, markW * 0.3);
+                float markMask = smoothstep(1.0, -1.0, markDist) * smoothstep(1.0, -1.0, dBody);
+                vec3 markCol = hsl2rgb(hue + 0.12, sat * 0.8, lit + 0.1);
+                col = mix(col, markCol, markMask * 0.35);
+            }
+        }
+    }
 
     // Subsurface scatter near head
     if (uLodTier == 0) {
