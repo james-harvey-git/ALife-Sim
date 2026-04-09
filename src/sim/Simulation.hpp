@@ -389,6 +389,8 @@ public:
     float sampleNutrient(float x, float y) const;
     Vec2 sampleCurrent(float x, float y) const;
     EnvironmentProbe probeEnvironment(float x, float y) const;
+    bool saveToFile(const std::string& path) const;
+    bool loadFromFile(const std::string& path);
     CreatureSnapshot selectedCreatureSnapshot() const;
     CreatureSnapshot topEnergyCreatureSnapshot() const;
     std::vector<LineageSnapshot> topLineageSnapshots(std::size_t maxCount = 5) const;

@@ -87,6 +87,7 @@ Run a non-graphical smoke test:
 
 ```bash
 ./build/alife_sim --smoke-test
+./build/alife_sim --smoke-test --report-format jsonl
 ```
 
 Run a longer headless probe:
@@ -121,11 +122,25 @@ Capture richer world snapshots in headless output:
 ./build/alife_sim --benchmark --benchmark-preset quick --report-format jsonl --snapshot
 ```
 
+Save and resume a simulation state:
+
+```bash
+./build/alife_sim --smoke-test --seed 1 --smoke-steps 1800 --save-state /tmp/alife_state.bin
+./build/alife_sim --smoke-test --load-state /tmp/alife_state.bin --smoke-steps 1800
+```
+
 Current benchmark presets:
 
 - `quick`: short multi-seed regression probe
 - `ecology`: medium multi-seed ecology baseline
 - `stress`: longer heavier benchmark for performance and stability work
+
+Run the built-in regression suite:
+
+```bash
+cd build
+ctest --output-on-failure
+```
 
 ## Repo Layout
 

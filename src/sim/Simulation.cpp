@@ -3,8 +3,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <fstream>
 #include <limits>
 #include <numeric>
+#include <sstream>
+#include <type_traits>
 
 namespace alife {
 
@@ -30,6 +33,101 @@ constexpr std::uint32_t kFirstHiddenNodeId = kOutputNodeBase + kOutputCount;
 
 using NodeKind = BrainGenome::NodeKind;
 using ConnectionGene = BrainGenome::ConnectionGene;
+
+constexpr char kSaveMagic[] = "ALIFESM1";
+constexpr std::uint32_t kSaveVersion = 1;
+
+template <typename T>
+bool writePod(std::ostream& stream, const T& value) {
+    static_assert(std::is_trivially_copyable_v<T>);
+    stream.write(reinterpret_cast<const char*>(&value), sizeof(T));
+    return static_cast<bool>(stream);
+}
+
+template <typename T>
+bool readPod(std::istream& stream, T& value) {
+    static_assert(std::is_trivially_copyable_v<T>);
+    stream.read(reinterpret_cast<char*>(&value), sizeof(T));
+    return static_cast<bool>(stream);
+}
+
+bool writeString(std::ostream& stream, const std::string& value) {
+    const std::uint64_t size = static_cast<std::uint64_t>(value.size());
+    return writePod(stream, size)
+        && static_cast<bool>(stream.write(value.data(), static_cast<std::streamsize>(size)));
+}
+
+bool readString(std::istream& stream, std::string& value) {
+    std::uint64_t size = 0;
+    if (!readPod(stream, size)) {
+        return false;
+    }
+    value.resize(static_cast<std::size_t>(size));
+    stream.read(value.data(), static_cast<std::streamsize>(size));
+    return static_cast<bool>(stream);
+}
+
+template <typename T>
+bool writeVector(std::ostream& stream, const std::vector<T>& values) {
+    static_assert(std::is_trivially_copyable_v<T>);
+    const std::uint64_t size = static_cast<std::uint64_t>(values.size());
+    if (!writePod(stream, size)) {
+        return false;
+    }
+    if (size == 0) {
+        return true;
+    }
+    stream.write(reinterpret_cast<const char*>(values.data()), static_cast<std::streamsize>(sizeof(T) * values.size()));
+    return static_cast<bool>(stream);
+}
+
+template <typename T>
+bool readVector(std::istream& stream, std::vector<T>& values) {
+    static_assert(std::is_trivially_copyable_v<T>);
+    std::uint64_t size = 0;
+    if (!readPod(stream, size)) {
+        return false;
+    }
+    values.resize(static_cast<std::size_t>(size));
+    if (size == 0) {
+        return true;
+    }
+    stream.read(reinterpret_cast<char*>(values.data()), static_cast<std::streamsize>(sizeof(T) * values.size()));
+    return static_cast<bool>(stream);
+}
+
+template <typename T>
+bool writeDeque(std::ostream& stream, const std::deque<T>& values) {
+    static_assert(std::is_trivially_copyable_v<T>);
+    const std::uint64_t size = static_cast<std::uint64_t>(values.size());
+    if (!writePod(stream, size)) {
+        return false;
+    }
+    for (const T& value : values) {
+        if (!writePod(stream, value)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+template <typename T>
+bool readDeque(std::istream& stream, std::deque<T>& values) {
+    static_assert(std::is_trivially_copyable_v<T>);
+    std::uint64_t size = 0;
+    if (!readPod(stream, size)) {
+        return false;
+    }
+    values.clear();
+    for (std::uint64_t index = 0; index < size; ++index) {
+        T value {};
+        if (!readPod(stream, value)) {
+            return false;
+        }
+        values.push_back(value);
+    }
+    return true;
+}
 
 float clamp01(float value) {
     return std::clamp(value, 0.0f, 1.0f);
@@ -1986,6 +2084,165 @@ WorldSnapshot Simulation::worldSnapshot(std::size_t topLineageCount) const {
         .topEnergyCreature = topEnergyCreatureSnapshot(),
         .topLineages = topLineageSnapshots(topLineageCount)
     };
+}
+
+bool Simulation::saveToFile(const std::string& path) const {
+    std::ofstream stream(path, std::ios::binary);
+    if (!stream.is_open()) {
+        return false;
+    }
+
+    const std::string rngState = [&]() {
+        std::ostringstream buffer;
+        buffer << rng_;
+        return buffer.str();
+    }();
+
+    stream.write(kSaveMagic, sizeof(kSaveMagic) - 1);
+    return static_cast<bool>(stream)
+        && writePod(stream, kSaveVersion)
+        && writePod(stream, worldWidth_)
+        && writePod(stream, worldHeight_)
+        && writePod(stream, timeSeconds_)
+        && writePod(stream, seed_)
+        && writePod(stream, nextCreatureId_)
+        && writePod(stream, selectedCreatureId_)
+        && writePod(stream, trackedLineageId_)
+        && writePod(stream, autoSelectionEnabled_)
+        && writePod(stream, stats_)
+        && writePod(stream, historyAccumulator_)
+        && writePod(stream, ancestorGenome_)
+        && writePod(stream, nextInnovationId_)
+        && writePod(stream, nextHiddenNodeId_)
+        && writePod(stream, nextLineageId_)
+        && writeVector(stream, creatures_)
+        && writeVector(stream, blooms_)
+        && writeVector(stream, carrion_)
+        && writeVector(stream, reefs_)
+        && writeVector(stream, nutrientGrid_)
+        && writeVector(stream, nutrientScratch_)
+        && writeDeque(stream, history_)
+        && writeVector(stream, innovations_)
+        && writeVector(stream, lineages_)
+        && writeString(stream, rngState);
+}
+
+bool Simulation::loadFromFile(const std::string& path) {
+    struct LoadedState {
+        float worldWidth = 0.0f;
+        float worldHeight = 0.0f;
+        float timeSeconds = 0.0f;
+        std::uint64_t seed = 1;
+        std::uint64_t nextCreatureId = 1;
+        std::uint64_t selectedCreatureId = 0;
+        std::uint32_t trackedLineageId = 0;
+        bool autoSelectionEnabled = true;
+        Stats stats {};
+        float historyAccumulator = 0.0f;
+        Genome ancestorGenome {};
+        std::uint32_t nextInnovationId = 1;
+        std::uint32_t nextHiddenNodeId = kFirstHiddenNodeId;
+        std::uint32_t nextLineageId = 1;
+        std::vector<Creature> creatures {};
+        std::vector<Bloom> blooms {};
+        std::vector<Carrion> carrion {};
+        std::vector<Reef> reefs {};
+        std::vector<float> nutrientGrid {};
+        std::vector<float> nutrientScratch {};
+        std::deque<HistorySample> history {};
+        std::vector<InnovationRecord> innovations {};
+        std::vector<LineageRecord> lineages {};
+        std::string rngState {};
+    };
+
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream.is_open()) {
+        return false;
+    }
+
+    char magic[sizeof(kSaveMagic) - 1] {};
+    stream.read(magic, sizeof(magic));
+    if (!stream || std::string(magic, sizeof(magic)) != std::string(kSaveMagic, sizeof(kSaveMagic) - 1)) {
+        return false;
+    }
+
+    std::uint32_t version = 0;
+    LoadedState loaded {};
+    if (!readPod(stream, version) || version != kSaveVersion
+        || !readPod(stream, loaded.worldWidth)
+        || !readPod(stream, loaded.worldHeight)
+        || !readPod(stream, loaded.timeSeconds)
+        || !readPod(stream, loaded.seed)
+        || !readPod(stream, loaded.nextCreatureId)
+        || !readPod(stream, loaded.selectedCreatureId)
+        || !readPod(stream, loaded.trackedLineageId)
+        || !readPod(stream, loaded.autoSelectionEnabled)
+        || !readPod(stream, loaded.stats)
+        || !readPod(stream, loaded.historyAccumulator)
+        || !readPod(stream, loaded.ancestorGenome)
+        || !readPod(stream, loaded.nextInnovationId)
+        || !readPod(stream, loaded.nextHiddenNodeId)
+        || !readPod(stream, loaded.nextLineageId)
+        || !readVector(stream, loaded.creatures)
+        || !readVector(stream, loaded.blooms)
+        || !readVector(stream, loaded.carrion)
+        || !readVector(stream, loaded.reefs)
+        || !readVector(stream, loaded.nutrientGrid)
+        || !readVector(stream, loaded.nutrientScratch)
+        || !readDeque(stream, loaded.history)
+        || !readVector(stream, loaded.innovations)
+        || !readVector(stream, loaded.lineages)
+        || !readString(stream, loaded.rngState)) {
+        return false;
+    }
+
+    std::istringstream rngStream(loaded.rngState);
+    std::mt19937_64 restoredRng {};
+    rngStream >> restoredRng;
+    if (!rngStream) {
+        return false;
+    }
+
+    worldWidth_ = loaded.worldWidth;
+    worldHeight_ = loaded.worldHeight;
+    timeSeconds_ = loaded.timeSeconds;
+    seed_ = loaded.seed;
+    nextCreatureId_ = loaded.nextCreatureId;
+    selectedCreatureId_ = loaded.selectedCreatureId;
+    trackedLineageId_ = loaded.trackedLineageId;
+    autoSelectionEnabled_ = loaded.autoSelectionEnabled;
+    stats_ = loaded.stats;
+    historyAccumulator_ = loaded.historyAccumulator;
+    ancestorGenome_ = loaded.ancestorGenome;
+    rng_ = restoredRng;
+    nextInnovationId_ = loaded.nextInnovationId;
+    nextHiddenNodeId_ = loaded.nextHiddenNodeId;
+    nextLineageId_ = loaded.nextLineageId;
+    creatures_ = std::move(loaded.creatures);
+    blooms_ = std::move(loaded.blooms);
+    carrion_ = std::move(loaded.carrion);
+    reefs_ = std::move(loaded.reefs);
+    nutrientGrid_ = std::move(loaded.nutrientGrid);
+    nutrientScratch_ = std::move(loaded.nutrientScratch);
+    history_ = std::move(loaded.history);
+    innovations_ = std::move(loaded.innovations);
+    lineages_ = std::move(loaded.lineages);
+
+    if (nutrientScratch_.size() != nutrientGrid_.size()) {
+        nutrientScratch_.resize(nutrientGrid_.size());
+    }
+
+    if (selectedCreatureId_ != 0) {
+        const auto selectedIt = std::find_if(creatures_.begin(), creatures_.end(), [&](const Creature& creature) {
+            return creature.id == selectedCreatureId_ && creature.alive;
+        });
+        if (selectedIt == creatures_.end()) {
+            selectedCreatureId_ = 0;
+            trackedLineageId_ = 0;
+        }
+    }
+
+    return true;
 }
 
 std::optional<std::uint64_t> Simulation::creatureAt(float worldX, float worldY, float radius) const {

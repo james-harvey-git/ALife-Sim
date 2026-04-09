@@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(BUILD_TESTING "Build regression tests" ON)
+if(BUILD_TESTING)
+    enable_testing()
+endif()
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
@@ -30,3 +35,22 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(alife_sim PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+if(BUILD_TESTING)
+    add_test(
+        NAME alife_smoke_seed1
+        COMMAND $<TARGET_FILE:alife_sim> --smoke-test --seed 1 --smoke-steps 3600
+    )
+
+    add_test(
+        NAME alife_benchmark_quick
+        COMMAND $<TARGET_FILE:alife_sim> --benchmark --benchmark-preset quick
+    )
+
+    add_test(
+        NAME alife_round_trip_persistence
+        COMMAND ${CMAKE_COMMAND}
+            -DALIFE_SIM_EXECUTABLE=$<TARGET_FILE:alife_sim>
+            -DSTATE_PATH=${CMAKE_BINARY_DIR}/phase0-roundtrip.bin
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/phase0_roundtrip.cmake
+    )
+endif()

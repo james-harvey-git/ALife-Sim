@@ -118,10 +118,14 @@ Run headless smoke tests:
 ./build/alife_sim --benchmark --benchmark-preset quick
 ./build/alife_sim --benchmark --benchmark-preset ecology
 ./build/alife_sim --benchmark --benchmark-preset quick --report-format jsonl --snapshot
+./build/alife_sim --smoke-test --seed 1 --smoke-steps 1800 --save-state /tmp/alife_state.bin
+./build/alife_sim --smoke-test --load-state /tmp/alife_state.bin --smoke-steps 1800
+cd build && ctest --output-on-failure
 ```
 
 Use multiple seeds when changing simulation dynamics.
 Prefer the named benchmark presets for regression comparisons, and use `--snapshot` when a run needs richer world/lineage/focal-creature context.
+Use the round-trip save/load path and `ctest` suite when touching Phase 0 infrastructure.
 
 ## Working Style
 

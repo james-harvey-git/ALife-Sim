@@ -45,6 +45,8 @@ struct CliOptions {
     ReportFormat reportFormat = ReportFormat::Text;
     BenchmarkPreset benchmarkPreset = BenchmarkPreset::None;
     int snapshotLineageCount = 5;
+    std::string loadStatePath {};
+    std::string saveStatePath {};
 };
 
 BenchmarkPreset parseBenchmarkPreset(const std::string& value) {
@@ -117,6 +119,10 @@ CliOptions parseArgs(int argc, char** argv) {
             options.snapshotOutput = true;
         } else if (argument == "--snapshot-lineages" && index + 1 < argc) {
             options.snapshotLineageCount = std::max(1, std::atoi(argv[++index]));
+        } else if (argument == "--load-state" && index + 1 < argc) {
+            options.loadStatePath = argv[++index];
+        } else if (argument == "--save-state" && index + 1 < argc) {
+            options.saveStatePath = argv[++index];
         } else if (argument == "--benchmark-preset" && index + 1 < argc) {
             options.benchmarkRun = true;
             options.benchmarkPreset = parseBenchmarkPreset(argv[++index]);
@@ -179,11 +185,28 @@ struct BatchSummary {
     float meanAverageShelter = 0.0f;
 };
 
-RunSummary runSummaryForSeed(std::uint64_t seed, int steps, bool captureSnapshot, int snapshotLineageCount) {
+bool initializeSimulation(alife::Simulation& simulation, const CliOptions& options, std::string& error) {
+    if (!options.loadStatePath.empty()) {
+        if (!simulation.loadFromFile(options.loadStatePath)) {
+            error = "Failed to load simulation state from " + options.loadStatePath;
+            return false;
+        }
+        return true;
+    }
+
+    simulation.reset(options.seed);
+    return true;
+}
+
+RunSummary runSummaryForSimulation(
+    alife::Simulation& simulation,
+    int steps,
+    bool captureSnapshot,
+    int snapshotLineageCount,
+    const std::string& saveStatePath
+) {
     constexpr float kStep = 1.0f / 60.0f;
 
-    alife::Simulation simulation;
-    simulation.reset(seed);
     const auto wallStart = std::chrono::steady_clock::now();
     for (int index = 0; index < steps; ++index) {
         simulation.step(kStep);
@@ -192,7 +215,7 @@ RunSummary runSummaryForSeed(std::uint64_t seed, int steps, bool captureSnapshot
 
     const alife::Stats& stats = simulation.stats();
     RunSummary summary {};
-    summary.seed = seed;
+    summary.seed = simulation.worldSnapshot(0).seed;
     summary.steps = steps;
     summary.wallSeconds = std::chrono::duration<double>(wallEnd - wallStart).count();
     summary.stepsPerSecond = summary.wallSeconds > 1e-9
@@ -233,6 +256,10 @@ RunSummary runSummaryForSeed(std::uint64_t seed, int steps, bool captureSnapshot
     if (captureSnapshot) {
         summary.hasSnapshot = true;
         summary.snapshot = simulation.worldSnapshot(static_cast<std::size_t>(snapshotLineageCount));
+    }
+
+    if (!saveStatePath.empty()) {
+        simulation.saveToFile(saveStatePath);
     }
 
     return summary;
@@ -558,14 +585,31 @@ int main(int argc, char** argv) {
     const CliOptions options = parseArgs(argc, argv);
     const std::string scenarioLabel = scenarioLabelForOptions(options);
 
+    if (options.batchRun && (!options.loadStatePath.empty() || !options.saveStatePath.empty())) {
+        std::cerr << "Batch runs do not support --load-state or --save-state.\n";
+        return 1;
+    }
+
     if (options.smokeTest) {
-        const RunSummary summary = runSummaryForSeed(
-            options.seed,
+        alife::Simulation simulation;
+        std::string error;
+        if (!initializeSimulation(simulation, options, error)) {
+            std::cerr << error << '\n';
+            return 1;
+        }
+
+        const RunSummary summary = runSummaryForSimulation(
+            simulation,
             options.smokeSteps,
             options.snapshotOutput,
-            options.snapshotLineageCount
+            options.snapshotLineageCount,
+            options.saveStatePath
         );
-        printSmokeSummary(summary, options.snapshotOutput);
+        if (options.reportFormat == ReportFormat::JsonLines) {
+            printJsonRunSummary(summary, options.snapshotOutput);
+        } else {
+            printSmokeSummary(summary, options.snapshotOutput);
+        }
         return summary.population > 0 ? 0 : 1;
     }
 
@@ -575,11 +619,14 @@ int main(int argc, char** argv) {
 
         for (int runIndex = 0; runIndex < options.batchCount; ++runIndex) {
             const std::uint64_t runSeed = options.seed + static_cast<std::uint64_t>(runIndex) * static_cast<std::uint64_t>(options.seedStride);
-            const RunSummary summary = runSummaryForSeed(
-                runSeed,
+            alife::Simulation simulation;
+            simulation.reset(runSeed);
+            const RunSummary summary = runSummaryForSimulation(
+                simulation,
                 options.smokeSteps,
                 options.snapshotOutput,
-                options.snapshotLineageCount
+                options.snapshotLineageCount,
+                {}
             );
             runs.push_back(summary);
         }
@@ -605,7 +652,11 @@ int main(int argc, char** argv) {
     }
 
     alife::Simulation simulation;
-    simulation.reset(options.seed);
+    std::string error;
+    if (!initializeSimulation(simulation, options, error)) {
+        std::cerr << error << '\n';
+        return 1;
+    }
 
     alife::Renderer renderer;
     if (!renderer.initialize()) {
@@ -750,5 +801,9 @@ int main(int argc, char** argv) {
     }
 
     renderer.shutdown();
+    if (!options.saveStatePath.empty() && !simulation.saveToFile(options.saveStatePath)) {
+        std::cerr << "Failed to save simulation state to " << options.saveStatePath << '\n';
+        return 1;
+    }
     return 0;
 }
