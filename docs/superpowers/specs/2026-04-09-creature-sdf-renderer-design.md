@@ -28,7 +28,14 @@ New files:
 - `src/render/CreatureSDF.hpp` — public interface
 - `src/render/CreatureSDF.cpp` — instanced rendering setup, data packing, draw calls, embedded GLSL shaders
 
-The shaders are embedded as `constexpr const char*` string literals inside `CreatureSDF.cpp`, matching the existing convention in `Renderer.cpp`. They can be extracted to standalone `.vert`/`.frag` files later if they grow large enough to warrant it.
+The SDF shaders live as standalone files:
+
+- `src/render/shaders/creature_sdf.vert` — vertex shader (quad expansion + instance data fetch)
+- `src/render/shaders/creature_sdf.frag` — the SDF fragment shader (body, features, shading)
+- `src/render/shaders/creature_dot.vert` — dot-tier vertex shader
+- `src/render/shaders/creature_dot.frag` — dot-tier fragment shader
+
+The SDF fragment shader will be 300-500 lines of GLSL. Standalone files give full IDE syntax highlighting, meaningful shader-compile error line numbers, GLSL linter support, and the option for runtime hot-reload during visual iteration. `CreatureSDF.cpp` includes a small utility to load shader source from disk at initialization. The existing tiny shaders in `Renderer.cpp` remain as embedded string literals — the convention difference is justified by the 50x size difference.
 
 ### Public Interface
 
@@ -351,6 +358,7 @@ In the shader:
 ### Build Changes
 
 - `CreatureSDF.hpp` and `CreatureSDF.cpp` added to `CMakeLists.txt`
+- Shader files (`src/render/shaders/creature_sdf.vert`, `.frag`, `creature_dot.vert`, `.frag`) added to the source tree. Loaded at runtime by `CreatureSDF::initialize()` via a file-read utility. A CMake `configure_file` or `#define` provides the shader directory path relative to the build output so the binary can locate them.
 - No new external dependencies
 
 ## Performance Estimates
