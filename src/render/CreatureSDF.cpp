@@ -288,10 +288,9 @@ void CreatureSDF::render(const Simulation& sim,
     // Dot tier
     drawTier(dotProgram_, 2, baseInstance, dotCount);
 
-    // Clean up
+    // Clean up — leave GL_BLEND enabled (caller expects it on for the rest of the frame)
     glBindVertexArray(0);
     glUseProgram(0);
-    glDisable(GL_BLEND);
 }
 
 void CreatureSDF::packAndClassify(const Simulation& sim,
