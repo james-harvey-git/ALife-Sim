@@ -73,13 +73,17 @@ float smin(float a, float b, float k) {
 
 float sdCapsule(vec2 p, vec2 a, vec2 b, float r) {
     vec2 pa = p - a, ba = b - a;
-    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    float baba = dot(ba, ba);
+    if (baba < 1e-6) return length(pa) - r;
+    float h = clamp(dot(pa, ba) / baba, 0.0, 1.0);
     return length(pa - ba * h) - r;
 }
 
 float sdTaperedCapsule(vec2 p, vec2 a, vec2 b, float rA, float rB) {
     vec2 pa = p - a, ba = b - a;
-    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    float baba = dot(ba, ba);
+    if (baba < 1e-6) return length(pa) - rA;
+    float h = clamp(dot(pa, ba) / baba, 0.0, 1.0);
     float r = mix(rA, rB, h);
     return length(pa - ba * h) - r;
 }
