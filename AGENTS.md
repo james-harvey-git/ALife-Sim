@@ -55,6 +55,7 @@ The long-term goal is not a scripted predator/prey toy. The goal is a watchable,
 - Branching lineage tracking for major brain-topology divergences so structural novelty can be observed as clades instead of anonymous drift.
 - Native inspection HUD with history graphs, ecology drift, lineage telemetry, a live brain-topology overlay, a scrollable selection inspector, and selection readouts including slip/curvature-style body metrics.
 - The app now boots with a subject selected, and the HUD exposes explicit observer picks (`random subject`, `top energy`, `dominant lineage`, `newest branch`) to support QA and watchability.
+- The world view now has a real follow camera with zoom controls, and the app boots in a closer subject-following view to make visual QA and screenshotting practical.
 - Observer selection is lineage-aware: when a watched creature dies, the sim should try to stay on that clade instead of immediately jumping to an unrelated organism.
 - The renderer also has habitat overlay modes (`V`) for visual QA of nutrient, lee-shelter, and shear fields.
 - Phase 0 backbone is now live: grouped config, save/load including config and RNG state, headless batch mode, structured world snapshots, and regression coverage for smoke, determinism, and round-trip persistence.

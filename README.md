@@ -67,13 +67,17 @@ Phase 0 of the roadmap is now in place: the sim has grouped configuration, state
 - `B`: select a representative from the newest active branch
 - `C`: clear selection
 - `V`: cycle habitat overlay (`off`, `nutrient`, `lee shelter`, `shear`)
+- `G`: toggle follow-camera lock on the selected creature
+- `Z`: snap the camera back onto the current subject
+- `+` / `-`: zoom the world view in or out
 - `[` / `PageUp`: scroll the selection inspector upward
 - `]` / `PageDown`: scroll the selection inspector downward
+- `Mouse Wheel` over the world view: zoom the camera
 - `Mouse Wheel` over the selection card: scroll the selection inspector
 - `Left Click`: select the nearest creature in the sim view
 - `Esc`: quit
 
-On launch, the sim starts with one creature already selected so the brain overlay and inspection readouts are immediately visible. If a watched creature dies, the observer now tries to stay locked onto the same lineage before falling back to broader picks.
+On launch, the sim starts with one creature already selected and the camera already zoomed in and following that subject, so close-up QA screenshots are easier to capture. If a watched creature dies, the observer now tries to stay locked onto the same lineage before falling back to broader picks.
 
 ## Build
 

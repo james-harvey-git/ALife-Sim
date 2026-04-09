@@ -35,6 +35,10 @@ public:
     void draw(const Simulation& simulation, bool paused, int timeScale);
     void cycleDebugOverlay();
     void scrollSelection(float deltaPixels);
+    void zoomView(float zoomSteps, const Simulation& simulation);
+    void resetCamera(const Simulation& simulation);
+    void focusSelection(const Simulation& simulation, bool snap = false);
+    void toggleFollowSelection();
 
     bool screenPointInWorld(int screenX, int screenY) const;
     bool screenPointInSelection(int screenX, int screenY) const;
@@ -62,8 +66,15 @@ private:
     DebugOverlay debugOverlay_ = DebugOverlay::None;
     float selectionScroll_ = 0.0f;
     std::uint64_t lastSelectedCreatureId_ = 0;
+    float cameraZoom_ = 2.6f;
+    Vec2 cameraCenter_ {0.0f, 0.0f};
+    bool cameraInitialized_ = false;
+    bool followSelection_ = true;
 
     void updateViewport(const Simulation& simulation);
+    void updateCamera(const Simulation& simulation);
+    Vec2 wrappedPositionNearCamera(const Vec2& point, const Simulation& simulation) const;
+    SDL_FPoint worldToScreen(const Vec2& world, const Simulation& simulation) const;
     const char* debugOverlayLabel() const;
 };
 

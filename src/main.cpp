@@ -866,6 +866,7 @@ int main(int argc, char** argv) {
         std::cerr << "Failed to initialize SDL renderer.\n";
         return 1;
     }
+    renderer.resetCamera(simulation);
 
     bool running = true;
     bool paused = false;
@@ -903,24 +904,45 @@ int main(int argc, char** argv) {
                         case SDLK_r:
                             ++seedCounter;
                             simulation.reset(seedCounter);
+                            renderer.resetCamera(simulation);
                             break;
                         case SDLK_c:
                             simulation.clearSelection();
+                            renderer.resetCamera(simulation);
                             break;
                         case SDLK_n:
                             simulation.selectRandomCreature();
+                            renderer.focusSelection(simulation, true);
                             break;
                         case SDLK_f:
                             simulation.selectTopEnergyCreature();
+                            renderer.focusSelection(simulation, true);
                             break;
                         case SDLK_l:
                             simulation.selectDominantLineageCreature();
+                            renderer.focusSelection(simulation, true);
                             break;
                         case SDLK_b:
                             simulation.selectNewestLineageCreature();
+                            renderer.focusSelection(simulation, true);
                             break;
                         case SDLK_v:
                             renderer.cycleDebugOverlay();
+                            break;
+                        case SDLK_g:
+                            renderer.toggleFollowSelection();
+                            break;
+                        case SDLK_z:
+                            renderer.focusSelection(simulation, true);
+                            break;
+                        case SDLK_EQUALS:
+                        case SDLK_PLUS:
+                        case SDLK_KP_PLUS:
+                            renderer.zoomView(1.0f, simulation);
+                            break;
+                        case SDLK_MINUS:
+                        case SDLK_KP_MINUS:
+                            renderer.zoomView(-1.0f, simulation);
                             break;
                         case SDLK_LEFTBRACKET:
                         case SDLK_PAGEUP:
@@ -939,18 +961,22 @@ int main(int argc, char** argv) {
                         const auto uiAction = renderer.uiActionAt(event.button.x, event.button.y);
                         if (uiAction == alife::Renderer::UiAction::SelectRandom) {
                             simulation.selectRandomCreature();
+                            renderer.focusSelection(simulation, true);
                             break;
                         }
                         if (uiAction == alife::Renderer::UiAction::SelectTopEnergy) {
                             simulation.selectTopEnergyCreature();
+                            renderer.focusSelection(simulation, true);
                             break;
                         }
                         if (uiAction == alife::Renderer::UiAction::SelectDominantLineage) {
                             simulation.selectDominantLineageCreature();
+                            renderer.focusSelection(simulation, true);
                             break;
                         }
                         if (uiAction == alife::Renderer::UiAction::SelectNewestLineage) {
                             simulation.selectNewestLineageCreature();
+                            renderer.focusSelection(simulation, true);
                             break;
                         }
                         if (uiAction == alife::Renderer::UiAction::CycleOverlay) {
@@ -966,6 +992,7 @@ int main(int argc, char** argv) {
                             const auto selection = simulation.creatureAt(worldPoint->x, worldPoint->y, 30.0f);
                             if (selection.has_value()) {
                                 simulation.setSelectedCreature(*selection);
+                                renderer.focusSelection(simulation, true);
                             } else {
                                 simulation.clearSelection();
                             }
@@ -978,6 +1005,11 @@ int main(int argc, char** argv) {
                     SDL_GetMouseState(&mouseX, &mouseY);
                     if (renderer.screenPointInSelection(mouseX, mouseY)) {
                         renderer.scrollSelection(static_cast<float>(-event.wheel.y) * 24.0f);
+                    } else if (renderer.screenPointInWorld(mouseX, mouseY)) {
+                        const float zoomSteps = event.wheel.preciseY != 0.0f
+                            ? event.wheel.preciseY
+                            : static_cast<float>(event.wheel.y);
+                        renderer.zoomView(zoomSteps, simulation);
                     }
                     break;
                 }

@@ -14,6 +14,10 @@ namespace alife {
 namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
+constexpr float kMinCameraZoom = 1.0f;
+constexpr float kMaxCameraZoom = 14.0f;
+constexpr float kDefaultCameraZoom = 6.5f;
+constexpr float kCameraFollowBlend = 0.2f;
 
 float clamp01(float value) {
     return std::clamp(value, 0.0f, 1.0f);
@@ -46,6 +50,33 @@ Vec2 normalize(const Vec2& value) {
     }
     const float invLen = 1.0f / std::sqrt(lenSq);
     return value * invLen;
+}
+
+float wrapAxis(float value, float extent) {
+    if (extent <= 0.0f) {
+        return value;
+    }
+    value = std::fmod(value, extent);
+    if (value < 0.0f) {
+        value += extent;
+    }
+    return value;
+}
+
+Vec2 wrapWorldPoint(const Vec2& point, float worldWidth, float worldHeight) {
+    return {wrapAxis(point.x, worldWidth), wrapAxis(point.y, worldHeight)};
+}
+
+float shortestWrappedOffset(float delta, float extent) {
+    if (extent <= 0.0f) {
+        return delta;
+    }
+    if (delta > extent * 0.5f) {
+        delta -= extent;
+    } else if (delta < -extent * 0.5f) {
+        delta += extent;
+    }
+    return delta;
 }
 
 std::uint8_t toByte(float value) {
@@ -284,16 +315,77 @@ void Renderer::shutdown() {
 }
 
 void Renderer::updateViewport(const Simulation& simulation) {
-    const float availableWidth = static_cast<float>(kWindowWidth - kPanelWidth - kMargin * 3);
-    const float availableHeight = static_cast<float>(kWindowHeight - kMargin * 2);
-    const float scale = std::min(availableWidth / simulation.worldWidth(), availableHeight / simulation.worldHeight());
-    const float drawWidth = simulation.worldWidth() * scale;
-    const float drawHeight = simulation.worldHeight() * scale;
+    (void)simulation;
+    worldViewport_.x = static_cast<float>(kMargin);
+    worldViewport_.y = static_cast<float>(kMargin);
+    worldViewport_.w = static_cast<float>(kWindowWidth - kPanelWidth - kMargin * 3);
+    worldViewport_.h = static_cast<float>(kWindowHeight - kMargin * 2);
+}
 
-    worldViewport_.x = static_cast<float>(kMargin) + (availableWidth - drawWidth) * 0.5f;
-    worldViewport_.y = static_cast<float>(kMargin) + (availableHeight - drawHeight) * 0.5f;
-    worldViewport_.w = drawWidth;
-    worldViewport_.h = drawHeight;
+void Renderer::resetCamera(const Simulation& simulation) {
+    cameraZoom_ = kDefaultCameraZoom;
+    cameraInitialized_ = true;
+    focusSelection(simulation, true);
+}
+
+void Renderer::focusSelection(const Simulation& simulation, bool snap) {
+    const CreatureSnapshot selected = simulation.selectedCreatureSnapshot();
+    if (selected.valid) {
+        if (snap || !cameraInitialized_) {
+            cameraCenter_ = selected.position;
+        } else {
+            const Vec2 delta {
+                shortestWrappedOffset(selected.position.x - cameraCenter_.x, simulation.worldWidth()),
+                shortestWrappedOffset(selected.position.y - cameraCenter_.y, simulation.worldHeight())
+            };
+            cameraCenter_ = wrapWorldPoint(cameraCenter_ + delta * kCameraFollowBlend, simulation.worldWidth(), simulation.worldHeight());
+        }
+        cameraInitialized_ = true;
+        return;
+    }
+
+    if (!cameraInitialized_ || snap) {
+        cameraCenter_ = {simulation.worldWidth() * 0.5f, simulation.worldHeight() * 0.5f};
+        cameraInitialized_ = true;
+    }
+}
+
+void Renderer::toggleFollowSelection() {
+    followSelection_ = !followSelection_;
+}
+
+void Renderer::zoomView(float zoomSteps, const Simulation& simulation) {
+    if (!cameraInitialized_) {
+        resetCamera(simulation);
+    }
+    const float factor = std::pow(1.18f, zoomSteps);
+    cameraZoom_ = std::clamp(cameraZoom_ * factor, kMinCameraZoom, kMaxCameraZoom);
+}
+
+void Renderer::updateCamera(const Simulation& simulation) {
+    if (!cameraInitialized_) {
+        resetCamera(simulation);
+    }
+    if (followSelection_) {
+        focusSelection(simulation, false);
+    }
+}
+
+Vec2 Renderer::wrappedPositionNearCamera(const Vec2& point, const Simulation& simulation) const {
+    return {
+        cameraCenter_.x + shortestWrappedOffset(point.x - cameraCenter_.x, simulation.worldWidth()),
+        cameraCenter_.y + shortestWrappedOffset(point.y - cameraCenter_.y, simulation.worldHeight())
+    };
+}
+
+SDL_FPoint Renderer::worldToScreen(const Vec2& world, const Simulation& simulation) const {
+    const float worldScale = std::min(worldViewport_.w / simulation.worldWidth(), worldViewport_.h / simulation.worldHeight()) * cameraZoom_;
+    const Vec2 wrapped = wrappedPositionNearCamera(world, simulation);
+    const Vec2 delta {wrapped.x - cameraCenter_.x, wrapped.y - cameraCenter_.y};
+    return {
+        worldViewport_.x + worldViewport_.w * 0.5f + delta.x * worldScale,
+        worldViewport_.y + worldViewport_.h * 0.5f + delta.y * worldScale
+    };
 }
 
 bool Renderer::screenPointInWorld(int screenX, int screenY) const {
@@ -308,9 +400,15 @@ std::optional<Vec2> Renderer::screenToWorld(int screenX, int screenY, const Simu
         return std::nullopt;
     }
 
-    const float nx = (static_cast<float>(screenX) - worldViewport_.x) / worldViewport_.w;
-    const float ny = (static_cast<float>(screenY) - worldViewport_.y) / worldViewport_.h;
-    return Vec2 {nx * simulation.worldWidth(), ny * simulation.worldHeight()};
+    const float worldScale = std::min(worldViewport_.w / simulation.worldWidth(), worldViewport_.h / simulation.worldHeight()) * cameraZoom_;
+    return wrapWorldPoint(
+        {
+            cameraCenter_.x + (static_cast<float>(screenX) - (worldViewport_.x + worldViewport_.w * 0.5f)) / worldScale,
+            cameraCenter_.y + (static_cast<float>(screenY) - (worldViewport_.y + worldViewport_.h * 0.5f)) / worldScale
+        },
+        simulation.worldWidth(),
+        simulation.worldHeight()
+    );
 }
 
 bool Renderer::screenPointInSelection(int screenX, int screenY) const {
@@ -376,6 +474,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     }
 
     updateViewport(simulation);
+    updateCamera(simulation);
     selectionViewport_ = {0.0f, 0.0f, 0.0f, 0.0f};
     randomSelectButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
     topEnergyButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -383,13 +482,9 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     newestLineageButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
     overlayButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
 
-    const auto worldToScreen = [&](const Vec2& world) {
-        return SDL_FPoint {
-            worldViewport_.x + (world.x / simulation.worldWidth()) * worldViewport_.w,
-            worldViewport_.y + (world.y / simulation.worldHeight()) * worldViewport_.h
-        };
-    };
-    const float worldScale = worldViewport_.w / simulation.worldWidth();
+    const float worldScale = std::min(worldViewport_.w / simulation.worldWidth(), worldViewport_.h / simulation.worldHeight()) * cameraZoom_;
+    const float visibleWorldWidth = worldViewport_.w / worldScale;
+    const float visibleWorldHeight = worldViewport_.h / worldScale;
 
     auto drawText = [&](TTF_Font* font, float x, float y, const std::string& text, SDL_Color color) {
         if (font == nullptr || text.empty()) {
@@ -408,32 +503,15 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         SDL_FreeSurface(surface);
     };
 
-    auto forEachWrappedWorldPoint = [&](const Vec2& worldPoint, float radiusPixels, auto drawFn) {
-        const SDL_FPoint base = worldToScreen(worldPoint);
-        constexpr std::array<float, 3> offsets { -1.0f, 0.0f, 1.0f };
-        for (float xOffset : offsets) {
-            for (float yOffset : offsets) {
-                const SDL_FPoint point {
-                    base.x + xOffset * worldViewport_.w,
-                    base.y + yOffset * worldViewport_.h
-                };
-                if (point.x + radiusPixels < worldViewport_.x
-                    || point.x - radiusPixels > worldViewport_.x + worldViewport_.w
-                    || point.y + radiusPixels < worldViewport_.y
-                    || point.y - radiusPixels > worldViewport_.y + worldViewport_.h) {
-                    continue;
-                }
-                drawFn(point);
-            }
-        }
-    };
-
     const Stats& stats = simulation.stats();
     const auto info = simulation.selectionInfo();
     const auto& history = simulation.history();
     const std::uint64_t currentSelectionId = simulation.selectedCreature();
     if (currentSelectionId != lastSelectedCreatureId_) {
         selectionScroll_ = 0.0f;
+        if (followSelection_) {
+            focusSelection(simulation, true);
+        }
         lastSelectedCreatureId_ = currentSelectionId;
     }
 
@@ -620,7 +698,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         const SDL_Color shadow = tint(body, 0.42f, 160);
         const SDL_Color eye = hsv(0.14f, 0.18f, 0.98f);
 
-        const SDL_FPoint head = worldToScreen(creature.bodyPoints[0]);
+        const SDL_FPoint head = worldToScreen(creature.bodyPoints[0], simulation);
         const auto wrappedPointToScreen = [&](const Vec2& point) {
             Vec2 delta {
                 point.x - creature.bodyPoints[0].x,
@@ -705,16 +783,19 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         const Vec2 tailDirection = normalize(wrappedTailDelta);
         const Vec2 tailSide {-tailDirection.y, tailDirection.x};
         const float tailIntegrity = segmentIntegrity(kBodySegments - 1);
-        const float tailSpan = creature.bodyRadii[kBodySegments - 1] * (1.3f + creature.traits.tailFork)
+        const float tailSpan = creature.bodyRadii[kBodySegments - 1] * (0.72f + creature.traits.tailFork * 0.28f)
             * lerp(0.55f, 1.0f, tailIntegrity);
-        const Vec2 tailTip = tailBase - tailDirection * (creature.traits.segmentSpacing * 1.4f);
-        fillTriangle(
-            renderer_,
-            wrappedPointToScreen(tailBase + tailSide * tailSpan),
-            wrappedPointToScreen(tailTip),
-            wrappedPointToScreen(tailBase - tailSide * tailSpan),
-            accent
-        );
+        const float tailLength = creature.traits.segmentSpacing * (1.25f + creature.traits.tailLengthScale * 1.1f);
+        const float forkSeparation = tailSpan * (0.16f + creature.traits.tailFork * 0.22f);
+        const Vec2 rootTop = tailBase + tailSide * tailSpan * 0.48f;
+        const Vec2 rootBottom = tailBase - tailSide * tailSpan * 0.48f;
+        const Vec2 tailCenter = tailBase - tailDirection * (tailLength * 0.34f);
+        const Vec2 topTip = tailBase - tailDirection * tailLength + tailSide * forkSeparation;
+        const Vec2 bottomTip = tailBase - tailDirection * tailLength - tailSide * forkSeparation;
+        fillTriangle(renderer_, wrappedPointToScreen(rootTop), wrappedPointToScreen(tailCenter), wrappedPointToScreen(rootBottom), tint(accent, 0.62f, 168));
+        fillTriangle(renderer_, wrappedPointToScreen(rootTop), wrappedPointToScreen(topTip), wrappedPointToScreen(tailCenter), tint(accent, 0.94f, 224));
+        fillTriangle(renderer_, wrappedPointToScreen(tailCenter), wrappedPointToScreen(bottomTip), wrappedPointToScreen(rootBottom), tint(accent, 0.94f, 224));
+        drawLine(renderer_, wrappedPointToScreen(tailBase), wrappedPointToScreen(tailCenter), tint(shell, 1.05f, 156));
 
         const Vec2 jawBase = creature.bodyPoints[0] + forwardVector * (creature.bodyRadii[0] * (0.48f + creature.traits.jawOffset));
         const Vec2 jawTip = jawBase + forwardVector * (creature.traits.biteReach * 0.55f);
@@ -787,25 +868,29 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     constexpr int gridRows = 18;
     for (int row = 0; row < gridRows; ++row) {
         for (int column = 0; column < gridColumns; ++column) {
-            const float tx = (static_cast<float>(column) + 0.5f) / static_cast<float>(gridColumns);
-            const float ty = (static_cast<float>(row) + 0.5f) / static_cast<float>(gridRows);
-            const Vec2 sample {
-                tx * simulation.worldWidth(),
-                ty * simulation.worldHeight()
-            };
+            const float tx = (static_cast<float>(column) + 0.5f) / static_cast<float>(gridColumns) - 0.5f;
+            const float ty = (static_cast<float>(row) + 0.5f) / static_cast<float>(gridRows) - 0.5f;
+            const Vec2 sample = wrapWorldPoint(
+                {
+                    cameraCenter_.x + tx * visibleWorldWidth,
+                    cameraCenter_.y + ty * visibleWorldHeight
+                },
+                simulation.worldWidth(),
+                simulation.worldHeight()
+            );
             const float nutrient = simulation.sampleNutrient(sample.x, sample.y);
             const Vec2 current = simulation.sampleCurrent(sample.x, sample.y);
             SDL_Color color = hsv(0.47f + nutrient * 0.1f, 0.42f, 0.16f + nutrient * 0.22f, static_cast<std::uint8_t>(32 + nutrient * 60.0f));
+            const SDL_FPoint center = worldToScreen(sample, simulation);
 
             const SDL_FRect cell {
-                worldViewport_.x + tx * worldViewport_.w - worldViewport_.w / static_cast<float>(gridColumns) * 0.5f,
-                worldViewport_.y + ty * worldViewport_.h - worldViewport_.h / static_cast<float>(gridRows) * 0.5f,
+                center.x - worldViewport_.w / static_cast<float>(gridColumns) * 0.5f,
+                center.y - worldViewport_.h / static_cast<float>(gridRows) * 0.5f,
                 worldViewport_.w / static_cast<float>(gridColumns) + 1.0f,
                 worldViewport_.h / static_cast<float>(gridRows) + 1.0f
             };
             fillRect(renderer_, cell, color);
 
-            const SDL_FPoint center {cell.x + cell.w * 0.5f, cell.y + cell.h * 0.5f};
             const SDL_FPoint arrow {
                 center.x + current.x * 0.015f * worldScale,
                 center.y + current.y * 0.015f * worldScale
@@ -819,11 +904,19 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         constexpr int overlayRows = 24;
         for (int row = 0; row < overlayRows; ++row) {
             for (int column = 0; column < overlayColumns; ++column) {
-                const float tx = (static_cast<float>(column) + 0.5f) / static_cast<float>(overlayColumns);
-                const float ty = (static_cast<float>(row) + 0.5f) / static_cast<float>(overlayRows);
+                const float tx = (static_cast<float>(column) + 0.5f) / static_cast<float>(overlayColumns) - 0.5f;
+                const float ty = (static_cast<float>(row) + 0.5f) / static_cast<float>(overlayRows) - 0.5f;
+                const Vec2 sample = wrapWorldPoint(
+                    {
+                        cameraCenter_.x + tx * visibleWorldWidth,
+                        cameraCenter_.y + ty * visibleWorldHeight
+                    },
+                    simulation.worldWidth(),
+                    simulation.worldHeight()
+                );
                 const EnvironmentProbe probe = simulation.probeEnvironment(
-                    tx * simulation.worldWidth(),
-                    ty * simulation.worldHeight()
+                    sample.x,
+                    sample.y
                 );
 
                 float signal = 0.0f;
@@ -849,9 +942,10 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
                     continue;
                 }
 
+                const SDL_FPoint center = worldToScreen(sample, simulation);
                 const SDL_FRect cell {
-                    worldViewport_.x + tx * worldViewport_.w - worldViewport_.w / static_cast<float>(overlayColumns) * 0.5f,
-                    worldViewport_.y + ty * worldViewport_.h - worldViewport_.h / static_cast<float>(overlayRows) * 0.5f,
+                    center.x - worldViewport_.w / static_cast<float>(overlayColumns) * 0.5f,
+                    center.y - worldViewport_.h / static_cast<float>(overlayRows) * 0.5f,
                     worldViewport_.w / static_cast<float>(overlayColumns) + 1.0f,
                     worldViewport_.h / static_cast<float>(overlayRows) + 1.0f
                 };
@@ -866,36 +960,41 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         const SDL_Color body = {58, 74, 84, 214};
         const SDL_Color ridge = {112, 143, 154, 124};
         const SDL_Color moss = {74, 131, 114, static_cast<std::uint8_t>(54 + reef.nutrientBoost * 44.0f)};
+        const SDL_FPoint center = worldToScreen(reef.position, simulation);
+        if (center.x + radius * 1.35f < worldViewport_.x
+            || center.x - radius * 1.35f > worldViewport_.x + worldViewport_.w
+            || center.y + radius * 1.35f < worldViewport_.y
+            || center.y - radius * 1.35f > worldViewport_.y + worldViewport_.h) {
+            continue;
+        }
 
-        forEachWrappedWorldPoint(reef.position, radius * 1.35f, [&](SDL_FPoint center) {
-            fillEllipse(renderer_, center.x, center.y, radius * 1.22f, radius * 1.12f, halo);
-            fillEllipse(renderer_, center.x, center.y, radius, radius * 0.92f, body);
-            fillEllipse(renderer_, center.x - radius * 0.12f, center.y - radius * 0.08f, radius * 0.52f, radius * 0.38f, ridge);
-            fillEllipse(renderer_, center.x + radius * 0.16f, center.y + radius * 0.1f, radius * 0.42f, radius * 0.28f, moss);
-            drawLine(
-                renderer_,
-                {center.x - radius * 0.54f, center.y - radius * 0.16f},
-                {center.x + radius * 0.44f, center.y + radius * 0.12f},
-                {136, 167, 178, 74}
-            );
-            drawLine(
-                renderer_,
-                {center.x - radius * 0.28f, center.y + radius * 0.26f},
-                {center.x + radius * 0.24f, center.y - radius * 0.3f},
-                {136, 167, 178, 62}
-            );
-        });
+        fillEllipse(renderer_, center.x, center.y, radius * 1.22f, radius * 1.12f, halo);
+        fillEllipse(renderer_, center.x, center.y, radius, radius * 0.92f, body);
+        fillEllipse(renderer_, center.x - radius * 0.12f, center.y - radius * 0.08f, radius * 0.52f, radius * 0.38f, ridge);
+        fillEllipse(renderer_, center.x + radius * 0.16f, center.y + radius * 0.1f, radius * 0.42f, radius * 0.28f, moss);
+        drawLine(
+            renderer_,
+            {center.x - radius * 0.54f, center.y - radius * 0.16f},
+            {center.x + radius * 0.44f, center.y + radius * 0.12f},
+            {136, 167, 178, 74}
+        );
+        drawLine(
+            renderer_,
+            {center.x - radius * 0.28f, center.y + radius * 0.26f},
+            {center.x + radius * 0.24f, center.y - radius * 0.3f},
+            {136, 167, 178, 62}
+        );
     }
 
     for (const Bloom& bloom : simulation.blooms()) {
-        const SDL_FPoint screen = worldToScreen(bloom.position);
+        const SDL_FPoint screen = worldToScreen(bloom.position, simulation);
         const float radius = 3.5f + bloom.energy / bloom.maxEnergy * 8.0f;
         fillEllipse(renderer_, screen.x, screen.y, radius, radius * 0.82f, {74, 211, 153, 210});
         fillEllipse(renderer_, screen.x, screen.y, radius * 0.55f, radius * 0.45f, {176, 253, 193, 200});
     }
 
     for (const Carrion& chunk : simulation.carrion()) {
-        const SDL_FPoint screen = worldToScreen(chunk.position);
+        const SDL_FPoint screen = worldToScreen(chunk.position, simulation);
         const float radius = 2.8f + std::sqrt(std::max(chunk.energy, 1.0f)) * 0.55f;
         fillEllipse(renderer_, screen.x, screen.y, radius, radius * 0.75f, {171, 77, 54, 190});
         fillEllipse(renderer_, screen.x + radius * 0.3f, screen.y - radius * 0.2f, radius * 0.35f, radius * 0.26f, {229, 155, 118, 160});
@@ -940,7 +1039,13 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     drawText(font_, summaryCard.x + 235.0f, summaryCard.y + 58.0f, "carrion " + std::to_string(stats.carrion), {222, 141, 112, 255});
     drawText(smallFont_, summaryCard.x + 12.0f, summaryCard.y + 84.0f, "births " + std::to_string(stats.births) + "  deaths " + std::to_string(stats.deaths), {181, 194, 208, 255});
     drawText(smallFont_, summaryCard.x + 208.0f, summaryCard.y + 84.0f, "season " + formatFloat(stats.season, 2) + "  reefs " + std::to_string(stats.reefs), {181, 194, 208, 255});
-    drawText(smallFont_, summaryCard.x + 12.0f, summaryCard.y + 100.0f, "overlay " + std::string(debugOverlayLabel()) + " (V)", {127, 153, 173, 255});
+    drawText(
+        smallFont_,
+        summaryCard.x + 12.0f,
+        summaryCard.y + 100.0f,
+        "overlay " + std::string(debugOverlayLabel()) + " (V)  zoom " + formatFloat(cameraZoom_, 1) + "x" + (followSelection_ ? "  follow on" : "  follow off"),
+        {127, 153, 173, 255}
+    );
     textY += summaryCard.h + 10.0f;
 
     const SDL_FRect populationCard {panel.x + 14.0f, textY, panel.w - 28.0f, 136.0f};
@@ -981,7 +1086,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     drawText(smallFont_, ecologyCard.x + 264.0f, ecologyCard.y + 114.0f, "brain " + formatFloat(stats.avgBrainComplexity, 2), {184, 172, 236, 255});
     textY += ecologyCard.h + 10.0f;
 
-    constexpr float controlsCardHeight = 110.0f;
+    constexpr float controlsCardHeight = 132.0f;
     const SDL_FRect selectionCard {
         panel.x + 14.0f,
         textY,
@@ -1151,6 +1256,13 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     drawButton(dominantLineageButton_, "dominant lineage (L)", {79, 70, 126, 255}, {232, 231, 244, 255});
     drawButton(newestLineageButton_, "newest branch (B)", {120, 76, 54, 255}, {244, 235, 227, 255});
     drawButton(overlayButton_, "habitat overlay: " + std::string(debugOverlayLabel()) + " (V)", {48, 90, 102, 255}, {228, 238, 242, 255});
+    drawText(
+        smallFont_,
+        controlsCard.x + 12.0f,
+        controlsCard.y + 104.0f,
+        "wheel over world or +/- zooms. G toggles follow. Z snaps to subject.",
+        {154, 173, 190, 255}
+    );
 
     SDL_RenderPresent(renderer_);
 }
