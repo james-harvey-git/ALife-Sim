@@ -1,12 +1,28 @@
 #include "render/CreatureSDF.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 
 #include <SDL2/SDL.h>
 
 namespace alife {
+
+namespace {
+
+inline float wrapDelta(float delta, float worldSize) {
+    if (delta > worldSize * 0.5f) return delta - worldSize;
+    if (delta < -worldSize * 0.5f) return delta + worldSize;
+    return delta;
+}
+
+inline float clamp01(float v) {
+    return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+}
+
+}  // namespace
 
 CreatureSDF::~CreatureSDF() { shutdown(); }
 
@@ -189,22 +205,320 @@ void CreatureSDF::ensureTextureCapacity(int creatureCount) {
     textureCapacity_ = newCapacity;
 }
 
-void CreatureSDF::render(const Simulation& /*sim*/,
-                         const SDL_FRect& /*worldViewport*/,
-                         float /*cameraZoom*/,
-                         const Vec2& /*cameraCenter*/,
-                         int /*drawableWidth*/,
-                         int /*drawableHeight*/) {
-    // Stub: will be implemented in Task 2
+void CreatureSDF::render(const Simulation& sim,
+                         const SDL_FRect& worldViewport,
+                         float cameraZoom,
+                         const Vec2& cameraCenter,
+                         int drawableWidth,
+                         int drawableHeight) {
+    // Pack creature data and classify into LOD tiers
+    packAndClassify(sim, worldViewport, cameraZoom, cameraCenter, drawableWidth, drawableHeight);
+
+    int fullCount = static_cast<int>(fullInstances_.size());
+    int simpleCount = static_cast<int>(simpleInstances_.size());
+    int dotCount = static_cast<int>(dotInstances_.size());
+    int totalVisible = fullCount + simpleCount + dotCount;
+
+    // Early return if no visible creatures
+    if (totalVisible == 0) return;
+
+    // Ensure TBO has enough capacity and upload packed data
+    ensureTextureCapacity(totalVisible);
+    GLsizeiptr dataBytes = static_cast<GLsizeiptr>(totalVisible) * kDataStride * sizeof(float);
+    glBindBuffer(GL_TEXTURE_BUFFER, dataBuffer_);
+    glBufferSubData(GL_TEXTURE_BUFFER, 0, dataBytes, packedData_.data());
+
+    // Bind TBO as texture unit 0
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_BUFFER, dataTexture_);
+
+    // Enable blending
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    // Build combined instance buffer [full...][simple...][dot...]
+    std::vector<InstanceData> allInstances;
+    allInstances.reserve(static_cast<std::size_t>(totalVisible));
+    allInstances.insert(allInstances.end(), fullInstances_.begin(), fullInstances_.end());
+    allInstances.insert(allInstances.end(), simpleInstances_.begin(), simpleInstances_.end());
+    allInstances.insert(allInstances.end(), dotInstances_.begin(), dotInstances_.end());
+
+    // Upload instance buffer
+    glBindVertexArray(quadVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, instanceVbo_);
+    GLsizeiptr instanceBytes = static_cast<GLsizeiptr>(totalVisible) * static_cast<GLsizeiptr>(sizeof(InstanceData));
+    glBufferData(GL_ARRAY_BUFFER, instanceBytes, allInstances.data(), GL_STREAM_DRAW);
+
+    float viewport[2] = {static_cast<float>(drawableWidth), static_cast<float>(drawableHeight)};
+
+    // Helper: issue an instanced draw call for one tier.
+    // Since macOS GL 4.1 lacks glDrawArraysInstancedBaseInstance,
+    // we rebind the instance attribute with an offset for each tier.
+    auto drawTier = [&](GLuint program, int lodTier, int baseInstance, int instanceCount) {
+        if (instanceCount == 0) return;
+
+        glUseProgram(program);
+        glUniform2f(glGetUniformLocation(program, "uViewport"), viewport[0], viewport[1]);
+        glUniform1i(glGetUniformLocation(program, "uCreatureData"), 0);
+        glUniform1i(glGetUniformLocation(program, "uLodTier"), lodTier);
+        // Tell the shader where this tier's data starts in the TBO.
+        // The shader can use: uDataOffset + gl_InstanceID to index into the TBO.
+        glUniform1i(glGetUniformLocation(program, "uDataOffset"), baseInstance);
+
+        // Rebind instance attribute with byte offset for this tier
+        glBindBuffer(GL_ARRAY_BUFFER, instanceVbo_);
+        auto byteOffset = static_cast<GLsizeiptr>(baseInstance) * static_cast<GLsizeiptr>(sizeof(InstanceData));
+        glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(InstanceData),
+                              reinterpret_cast<const void*>(byteOffset));
+
+        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, instanceCount);
+    };
+
+    // Draw each tier
+    int baseInstance = 0;
+
+    // Full SDF tier
+    drawTier(sdfProgram_, 0, baseInstance, fullCount);
+    baseInstance += fullCount;
+
+    // Simple SDF tier
+    drawTier(sdfProgram_, 1, baseInstance, simpleCount);
+    baseInstance += simpleCount;
+
+    // Dot tier
+    drawTier(dotProgram_, 2, baseInstance, dotCount);
+
+    // Clean up
+    glBindVertexArray(0);
+    glUseProgram(0);
+    glDisable(GL_BLEND);
 }
 
-void CreatureSDF::packAndClassify(const Simulation& /*sim*/,
-                                  const SDL_FRect& /*worldViewport*/,
+void CreatureSDF::packAndClassify(const Simulation& sim,
+                                  const SDL_FRect& worldViewport,
                                   float /*cameraZoom*/,
-                                  const Vec2& /*cameraCenter*/,
-                                  int /*drawableWidth*/,
-                                  int /*drawableHeight*/) {
-    // Stub: will be implemented in Task 2
+                                  const Vec2& cameraCenter,
+                                  int drawableWidth,
+                                  int drawableHeight) {
+    const auto& creatures = sim.creatures();
+    const float worldW = sim.worldWidth();
+    const float worldH = sim.worldHeight();
+
+    // Compute scale factors.
+    // worldScale converts world-coordinate deltas to viewport logical-pixel deltas.
+    // Zoom is already encoded in the worldViewport dimensions by the caller.
+    const float worldScale = (worldW > 0.0f) ? worldViewport.w / worldW : 1.0f;
+    const float retinaScale = (worldViewport.w > 0.0f)
+        ? static_cast<float>(drawableWidth) / worldViewport.w
+        : 1.0f;
+
+    const float screenW = static_cast<float>(drawableWidth);
+    const float screenH = static_cast<float>(drawableHeight);
+
+    auto worldToScreen = [&](const Vec2& point) -> Vec2 {
+        float dx = wrapDelta(point.x - cameraCenter.x, worldW);
+        float dy = wrapDelta(point.y - cameraCenter.y, worldH);
+        float vpCenterX = worldViewport.x + worldViewport.w * 0.5f;
+        float vpCenterY = worldViewport.y + worldViewport.h * 0.5f;
+        return {
+            (vpCenterX + dx * worldScale) * retinaScale,
+            (vpCenterY + dy * worldScale) * retinaScale
+        };
+    };
+
+    // Clear previous frame data
+    fullInstances_.clear();
+    simpleInstances_.clear();
+    dotInstances_.clear();
+
+    // Count alive creatures for buffer sizing
+    int aliveCount = 0;
+    for (const auto& c : creatures) {
+        if (c.alive) ++aliveCount;
+    }
+
+    // Pre-allocate packed data buffer
+    packedData_.resize(static_cast<std::size_t>(aliveCount) * kDataStride);
+    std::memset(packedData_.data(), 0, packedData_.size() * sizeof(float));
+
+    // Temporary storage for sorting: (tier, creature index, packed data index)
+    struct ClassifiedCreature {
+        int tier;          // 0=full, 1=simple, 2=dot
+        int creatureIdx;
+        InstanceData aabb;
+    };
+    std::vector<ClassifiedCreature> classified;
+    classified.reserve(static_cast<std::size_t>(aliveCount));
+
+    for (int ci = 0; ci < static_cast<int>(creatures.size()); ++ci) {
+        const Creature& c = creatures[static_cast<std::size_t>(ci)];
+        if (!c.alive) continue;
+
+        // Compute screen-space head diameter for LOD classification
+        float headScreenDiameter = 2.0f * c.bodyRadii[0] * worldScale * retinaScale;
+
+        // Classify into LOD tier
+        int tier;
+        if (headScreenDiameter > kFullSdfThreshold) {
+            tier = 0;  // Full SDF
+        } else if (headScreenDiameter > kSimpleSdfThreshold) {
+            tier = 1;  // Simple SDF
+        } else {
+            tier = 2;  // Dot
+        }
+
+        // Compute screen positions for all segments
+        Vec2 segScreen[kBodySegments];
+        float segRadiiScreen[kBodySegments];
+        float minX = 1e9f, minY = 1e9f, maxX = -1e9f, maxY = -1e9f;
+
+        for (int s = 0; s < kBodySegments; ++s) {
+            segScreen[s] = worldToScreen(c.bodyPoints[static_cast<std::size_t>(s)]);
+            segRadiiScreen[s] = c.bodyRadii[static_cast<std::size_t>(s)] * worldScale * retinaScale;
+
+            float r = segRadiiScreen[s];
+            minX = std::min(minX, segScreen[s].x - r);
+            minY = std::min(minY, segScreen[s].y - r);
+            maxX = std::max(maxX, segScreen[s].x + r);
+            maxY = std::max(maxY, segScreen[s].y + r);
+        }
+
+        // Generous padding for appendages (fins, tail, jaw)
+        float appendagePad = headScreenDiameter * 1.5f;
+        minX -= appendagePad;
+        minY -= appendagePad;
+        maxX += appendagePad;
+        maxY += appendagePad;
+
+        // Cull off-screen creatures
+        if (maxX < 0.0f || minX > screenW || maxY < 0.0f || minY > screenH) {
+            continue;
+        }
+
+        ClassifiedCreature cc;
+        cc.tier = tier;
+        cc.creatureIdx = ci;
+        cc.aabb = {minX, minY, maxX, maxY};
+        classified.push_back(cc);
+    }
+
+    // Sort by tier so packing is contiguous: [full...][simple...][dot...]
+    std::sort(classified.begin(), classified.end(),
+              [](const ClassifiedCreature& a, const ClassifiedCreature& b) {
+                  return a.tier < b.tier;
+              });
+
+    // Resize packed data for actual visible count
+    int visibleCount = static_cast<int>(classified.size());
+    packedData_.resize(static_cast<std::size_t>(visibleCount) * kDataStride);
+    if (visibleCount > 0) {
+        std::memset(packedData_.data(), 0, packedData_.size() * sizeof(float));
+    }
+
+    // Pack each creature's data and push instance AABBs
+    for (int i = 0; i < visibleCount; ++i) {
+        const ClassifiedCreature& cc = classified[static_cast<std::size_t>(i)];
+        const Creature& c = creatures[static_cast<std::size_t>(cc.creatureIdx)];
+        float* d = packedData_.data() + static_cast<std::size_t>(i) * kDataStride;
+
+        // Recompute screen positions (we need them for packing)
+        Vec2 segScreen[kBodySegments];
+        float segRadiiScreen[kBodySegments];
+        for (int s = 0; s < kBodySegments; ++s) {
+            segScreen[s] = worldToScreen(c.bodyPoints[static_cast<std::size_t>(s)]);
+            segRadiiScreen[s] = c.bodyRadii[static_cast<std::size_t>(s)] * worldScale * retinaScale;
+        }
+
+        // [0-11] Segment screen positions (6 x vec2)
+        for (int s = 0; s < kBodySegments; ++s) {
+            d[s * 2 + 0] = segScreen[s].x;
+            d[s * 2 + 1] = segScreen[s].y;
+        }
+
+        // [12-17] Segment radii in screen pixels
+        for (int s = 0; s < kBodySegments; ++s) {
+            d[12 + s] = segRadiiScreen[s];
+        }
+
+        // [18-19] Head screen position (copy of offsets 0-1)
+        d[18] = d[0];
+        d[19] = d[1];
+
+        // [20-21] Forward axis (cos(angle), sin(angle))
+        d[20] = std::cos(c.angle);
+        d[21] = std::sin(c.angle);
+
+        // [22] Heading angle
+        d[22] = c.angle;
+
+        // [23] Gait phase
+        d[23] = c.gaitPhase;
+
+        // [24] Thrust drive (outputs[0] clamped 0-1)
+        d[24] = clamp01(c.outputs[0]);
+
+        // [25] Bite drive (outputs[4] clamped 0-1)
+        d[25] = clamp01(c.outputs[4]);
+
+        // [26-31] Segment integrity (1 - segmentDamage/segmentDurability, clamped 0-1)
+        for (int s = 0; s < kBodySegments; ++s) {
+            float durability = c.traits.segmentDurability[static_cast<std::size_t>(s)];
+            float damage = c.segmentDamage[static_cast<std::size_t>(s)];
+            float integrity = (durability > 0.0f) ? (1.0f - damage / durability) : 1.0f;
+            d[26 + s] = clamp01(integrity);
+        }
+
+        // [32] Hue
+        d[32] = c.genome.morphology.hue;
+
+        // [33] Saturation: 0.46 + (0.78-0.46) * (armor*0.72 + aggression*0.28)
+        float armor = c.genome.morphology.armor;
+        float aggGenome = c.genome.ecology.aggression;
+        d[33] = 0.46f + (0.78f - 0.46f) * (armor * 0.72f + aggGenome * 0.28f);
+
+        // [34] Lightness: 0.56 + (0.76-0.56) * (plantAffinity*0.55 + energyLevel*0.45)
+        float plantAffinity = c.genome.ecology.plantAffinity;
+        float repThresh = std::max(56.0f, c.traits.reproductionThreshold);
+        float energyLevel = clamp01(c.energy / repThresh);
+        d[34] = 0.56f + (0.76f - 0.56f) * (plantAffinity * 0.55f + energyLevel * 0.45f);
+
+        // [35] Energy level
+        d[35] = energyLevel;
+
+        // [36] Diet: meatAffinity / max(0.18, plantAffinity+meatAffinity), clamped 0-1
+        float meatAffinity = c.genome.ecology.meatAffinity;
+        d[36] = clamp01(meatAffinity / std::max(0.18f, plantAffinity + meatAffinity));
+
+        // [37] Aggression: ecology.aggression*0.68 + diet*0.32, clamped 0-1
+        d[37] = clamp01(aggGenome * 0.68f + d[36] * 0.32f);
+
+        // [38-51] Genome morphology traits (14 values)
+        const auto& morph = c.genome.morphology;
+        d[38] = morph.finArea;
+        d[39] = morph.finPlacement;
+        d[40] = morph.tailLength;
+        d[41] = morph.tailFlex;
+        d[42] = morph.tailFork;
+        d[43] = morph.jawLength;
+        d[44] = morph.jawArc;
+        d[45] = morph.sensorRange;
+        d[46] = morph.sensorSpan;   // used for expressiveness
+        d[47] = morph.spikes;
+        d[48] = morph.pattern;
+        d[49] = morph.bodyTaper;
+        d[50] = morph.armor;
+        d[51] = morph.coreSize;
+
+        // [52-55] Reserved (already zeroed by memset)
+
+        // Push instance AABB into the correct tier vector
+        switch (cc.tier) {
+            case 0: fullInstances_.push_back(cc.aabb); break;
+            case 1: simpleInstances_.push_back(cc.aabb); break;
+            case 2: dotInstances_.push_back(cc.aabb); break;
+            default: break;
+        }
+    }
 }
 
 }  // namespace alife
