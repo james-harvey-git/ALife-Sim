@@ -51,10 +51,13 @@ private:
     GLuint dataTexture_ = 0;
     int textureCapacity_ = 0;
 
+    static_assert(kDataStride % 4 == 0, "kDataStride must be a multiple of 4 for RGBA32F texel alignment");
+
     std::vector<float> packedData_;
     std::vector<InstanceData> fullInstances_;
     std::vector<InstanceData> simpleInstances_;
     std::vector<InstanceData> dotInstances_;
+    std::vector<InstanceData> allInstances_;  // reused each frame to avoid allocation
 
     GLuint loadShaderProgram(const std::string& vertPath, const std::string& fragPath);
     std::string readFile(const std::string& path);

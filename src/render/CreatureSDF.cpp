@@ -237,17 +237,17 @@ void CreatureSDF::render(const Simulation& sim,
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     // Build combined instance buffer [full...][simple...][dot...]
-    std::vector<InstanceData> allInstances;
-    allInstances.reserve(static_cast<std::size_t>(totalVisible));
-    allInstances.insert(allInstances.end(), fullInstances_.begin(), fullInstances_.end());
-    allInstances.insert(allInstances.end(), simpleInstances_.begin(), simpleInstances_.end());
-    allInstances.insert(allInstances.end(), dotInstances_.begin(), dotInstances_.end());
+    allInstances_.clear();
+    allInstances_.reserve(static_cast<std::size_t>(totalVisible));
+    allInstances_.insert(allInstances_.end(), fullInstances_.begin(), fullInstances_.end());
+    allInstances_.insert(allInstances_.end(), simpleInstances_.begin(), simpleInstances_.end());
+    allInstances_.insert(allInstances_.end(), dotInstances_.begin(), dotInstances_.end());
 
     // Upload instance buffer
     glBindVertexArray(quadVao_);
     glBindBuffer(GL_ARRAY_BUFFER, instanceVbo_);
     GLsizeiptr instanceBytes = static_cast<GLsizeiptr>(totalVisible) * static_cast<GLsizeiptr>(sizeof(InstanceData));
-    glBufferData(GL_ARRAY_BUFFER, instanceBytes, allInstances.data(), GL_STREAM_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, instanceBytes, allInstances_.data(), GL_STREAM_DRAW);
 
     float viewport[2] = {static_cast<float>(drawableWidth), static_cast<float>(drawableHeight)};
 
@@ -296,7 +296,7 @@ void CreatureSDF::render(const Simulation& sim,
 
 void CreatureSDF::packAndClassify(const Simulation& sim,
                                   const SDL_FRect& worldViewport,
-                                  float /*cameraZoom*/,
+                                  float cameraZoom,
                                   const Vec2& cameraCenter,
                                   int drawableWidth,
                                   int drawableHeight) {
@@ -305,9 +305,10 @@ void CreatureSDF::packAndClassify(const Simulation& sim,
     const float worldH = sim.worldHeight();
 
     // Compute scale factors.
-    // worldScale converts world-coordinate deltas to viewport logical-pixel deltas.
-    // Zoom is already encoded in the worldViewport dimensions by the caller.
-    const float worldScale = (worldW > 0.0f) ? worldViewport.w / worldW : 1.0f;
+    // worldScale matches Renderer::worldScale(): min(vpW/worldW, vpH/worldH) * zoom
+    const float worldScale = std::min(worldViewport.w / std::max(worldW, 1.0f),
+                                      worldViewport.h / std::max(worldH, 1.0f))
+                           * cameraZoom;
     const float retinaScale = (worldViewport.w > 0.0f)
         ? static_cast<float>(drawableWidth) / worldViewport.w
         : 1.0f;
@@ -337,15 +338,13 @@ void CreatureSDF::packAndClassify(const Simulation& sim,
         if (c.alive) ++aliveCount;
     }
 
-    // Pre-allocate packed data buffer
-    packedData_.resize(static_cast<std::size_t>(aliveCount) * kDataStride);
-    std::memset(packedData_.data(), 0, packedData_.size() * sizeof(float));
-
-    // Temporary storage for sorting: (tier, creature index, packed data index)
+    // Temporary storage for classification and cached screen positions
     struct ClassifiedCreature {
         int tier;          // 0=full, 1=simple, 2=dot
         int creatureIdx;
         InstanceData aabb;
+        Vec2 segScreen[kBodySegments];
+        float segRadiiScreen[kBodySegments];
     };
     std::vector<ClassifiedCreature> classified;
     classified.reserve(static_cast<std::size_t>(aliveCount));
@@ -354,51 +353,44 @@ void CreatureSDF::packAndClassify(const Simulation& sim,
         const Creature& c = creatures[static_cast<std::size_t>(ci)];
         if (!c.alive) continue;
 
-        // Compute screen-space head diameter for LOD classification
-        float headScreenDiameter = 2.0f * c.bodyRadii[0] * worldScale * retinaScale;
-
-        // Classify into LOD tier
-        int tier;
-        if (headScreenDiameter > kFullSdfThreshold) {
-            tier = 0;  // Full SDF
-        } else if (headScreenDiameter > kSimpleSdfThreshold) {
-            tier = 1;  // Simple SDF
-        } else {
-            tier = 2;  // Dot
-        }
+        ClassifiedCreature cc;
+        cc.creatureIdx = ci;
 
         // Compute screen positions for all segments
-        Vec2 segScreen[kBodySegments];
-        float segRadiiScreen[kBodySegments];
         float minX = 1e9f, minY = 1e9f, maxX = -1e9f, maxY = -1e9f;
 
         for (int s = 0; s < kBodySegments; ++s) {
-            segScreen[s] = worldToScreen(c.bodyPoints[static_cast<std::size_t>(s)]);
-            segRadiiScreen[s] = c.bodyRadii[static_cast<std::size_t>(s)] * worldScale * retinaScale;
+            cc.segScreen[s] = worldToScreen(c.bodyPoints[static_cast<std::size_t>(s)]);
+            cc.segRadiiScreen[s] = c.bodyRadii[static_cast<std::size_t>(s)] * worldScale * retinaScale;
 
-            float r = segRadiiScreen[s];
-            minX = std::min(minX, segScreen[s].x - r);
-            minY = std::min(minY, segScreen[s].y - r);
-            maxX = std::max(maxX, segScreen[s].x + r);
-            maxY = std::max(maxY, segScreen[s].y + r);
+            float r = cc.segRadiiScreen[s];
+            minX = std::min(minX, cc.segScreen[s].x - r);
+            minY = std::min(minY, cc.segScreen[s].y - r);
+            maxX = std::max(maxX, cc.segScreen[s].x + r);
+            maxY = std::max(maxY, cc.segScreen[s].y + r);
+        }
+
+        // Classify into LOD tier by screen-space head diameter
+        float headScreenDiameter = 2.0f * cc.segRadiiScreen[0];
+        if (headScreenDiameter > kFullSdfThreshold) {
+            cc.tier = 0;  // Full SDF
+        } else if (headScreenDiameter > kSimpleSdfThreshold) {
+            cc.tier = 1;  // Simple SDF
+        } else {
+            cc.tier = 2;  // Dot
         }
 
         // Generous padding for appendages (fins, tail, jaw)
         float appendagePad = headScreenDiameter * 1.5f;
-        minX -= appendagePad;
-        minY -= appendagePad;
-        maxX += appendagePad;
-        maxY += appendagePad;
+        cc.aabb = {minX - appendagePad, minY - appendagePad,
+                   maxX + appendagePad, maxY + appendagePad};
 
         // Cull off-screen creatures
-        if (maxX < 0.0f || minX > screenW || maxY < 0.0f || minY > screenH) {
+        if (cc.aabb.maxX < 0.0f || cc.aabb.minX > screenW ||
+            cc.aabb.maxY < 0.0f || cc.aabb.minY > screenH) {
             continue;
         }
 
-        ClassifiedCreature cc;
-        cc.tier = tier;
-        cc.creatureIdx = ci;
-        cc.aabb = {minX, minY, maxX, maxY};
         classified.push_back(cc);
     }
 
@@ -408,7 +400,7 @@ void CreatureSDF::packAndClassify(const Simulation& sim,
                   return a.tier < b.tier;
               });
 
-    // Resize packed data for actual visible count
+    // Resize and zero packed data for actual visible count
     int visibleCount = static_cast<int>(classified.size());
     packedData_.resize(static_cast<std::size_t>(visibleCount) * kDataStride);
     if (visibleCount > 0) {
@@ -421,23 +413,15 @@ void CreatureSDF::packAndClassify(const Simulation& sim,
         const Creature& c = creatures[static_cast<std::size_t>(cc.creatureIdx)];
         float* d = packedData_.data() + static_cast<std::size_t>(i) * kDataStride;
 
-        // Recompute screen positions (we need them for packing)
-        Vec2 segScreen[kBodySegments];
-        float segRadiiScreen[kBodySegments];
+        // [0-11] Segment screen positions (6 x vec2) — from cached values
         for (int s = 0; s < kBodySegments; ++s) {
-            segScreen[s] = worldToScreen(c.bodyPoints[static_cast<std::size_t>(s)]);
-            segRadiiScreen[s] = c.bodyRadii[static_cast<std::size_t>(s)] * worldScale * retinaScale;
+            d[s * 2 + 0] = cc.segScreen[s].x;
+            d[s * 2 + 1] = cc.segScreen[s].y;
         }
 
-        // [0-11] Segment screen positions (6 x vec2)
+        // [12-17] Segment radii in screen pixels — from cached values
         for (int s = 0; s < kBodySegments; ++s) {
-            d[s * 2 + 0] = segScreen[s].x;
-            d[s * 2 + 1] = segScreen[s].y;
-        }
-
-        // [12-17] Segment radii in screen pixels
-        for (int s = 0; s < kBodySegments; ++s) {
-            d[12 + s] = segRadiiScreen[s];
+            d[12 + s] = cc.segRadiiScreen[s];
         }
 
         // [18-19] Head screen position (copy of offsets 0-1)
@@ -468,29 +452,32 @@ void CreatureSDF::packAndClassify(const Simulation& sim,
             d[26 + s] = clamp01(integrity);
         }
 
+        // Compute derived traits first (needed for saturation/lightness)
+        float plantAffinity = c.genome.ecology.plantAffinity;
+        float meatAffinity = c.genome.ecology.meatAffinity;
+        float diet = clamp01(meatAffinity / std::max(0.18f, plantAffinity + meatAffinity));
+        float repThresh = std::max(56.0f, c.traits.reproductionThreshold);
+        float energyLevel = clamp01(c.energy / repThresh);
+        float aggression = clamp01(c.genome.ecology.aggression * 0.68f + diet * 0.32f);
+
         // [32] Hue
         d[32] = c.genome.morphology.hue;
 
-        // [33] Saturation: 0.46 + (0.78-0.46) * (armor*0.72 + aggression*0.28)
+        // [33] Saturation: 0.46 + 0.32 * (armor*0.72 + aggression*0.28)
         float armor = c.genome.morphology.armor;
-        float aggGenome = c.genome.ecology.aggression;
-        d[33] = 0.46f + (0.78f - 0.46f) * (armor * 0.72f + aggGenome * 0.28f);
+        d[33] = 0.46f + (0.78f - 0.46f) * (armor * 0.72f + aggression * 0.28f);
 
-        // [34] Lightness: 0.56 + (0.76-0.56) * (plantAffinity*0.55 + energyLevel*0.45)
-        float plantAffinity = c.genome.ecology.plantAffinity;
-        float repThresh = std::max(56.0f, c.traits.reproductionThreshold);
-        float energyLevel = clamp01(c.energy / repThresh);
+        // [34] Lightness: 0.56 + 0.20 * (plantAffinity*0.55 + energyLevel*0.45)
         d[34] = 0.56f + (0.76f - 0.56f) * (plantAffinity * 0.55f + energyLevel * 0.45f);
 
         // [35] Energy level
         d[35] = energyLevel;
 
-        // [36] Diet: meatAffinity / max(0.18, plantAffinity+meatAffinity), clamped 0-1
-        float meatAffinity = c.genome.ecology.meatAffinity;
-        d[36] = clamp01(meatAffinity / std::max(0.18f, plantAffinity + meatAffinity));
+        // [36] Diet
+        d[36] = diet;
 
-        // [37] Aggression: ecology.aggression*0.68 + diet*0.32, clamped 0-1
-        d[37] = clamp01(aggGenome * 0.68f + d[36] * 0.32f);
+        // [37] Aggression (blended)
+        d[37] = aggression;
 
         // [38-51] Genome morphology traits (14 values)
         const auto& morph = c.genome.morphology;
