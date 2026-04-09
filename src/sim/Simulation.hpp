@@ -62,11 +62,17 @@ struct BrainGenome {
 struct MorphologyGenome {
     float coreSize = 0.5f;
     float elongation = 0.5f;
+    float bodyTaper = 0.5f;
     float finArea = 0.5f;
+    float finPlacement = 0.5f;
     float tailFlex = 0.5f;
+    float tailLength = 0.5f;
+    float tailFork = 0.5f;
     float armor = 0.5f;
+    float armorDistribution = 0.5f;
     float jawLength = 0.5f;
     float jawArc = 0.5f;
+    float jawOffset = 0.5f;
     float sensorSpan = 0.5f;
     float sensorRange = 0.5f;
     float spikes = 0.5f;
@@ -118,6 +124,19 @@ struct Traits {
     float maxHealth = 100.0f;
     float signalRange = 120.0f;
     float carrionYield = 70.0f;
+    float tailLengthScale = 1.0f;
+    float finPlacement = 0.5f;
+    float tailFork = 0.5f;
+    float jawOffset = 0.2f;
+    std::array<float, kBodySegments> segmentRestRadii {};
+    std::array<float, kBodySegments> segmentSpacingScale {};
+    std::array<float, kBodySegments> segmentMass {};
+    std::array<float, kBodySegments> segmentDrive {};
+    std::array<float, kBodySegments> segmentJointStiffness {};
+    std::array<float, kBodySegments> segmentForwardDragProfile {};
+    std::array<float, kBodySegments> segmentLateralDragProfile {};
+    std::array<float, kBodySegments> segmentArmor {};
+    std::array<float, kBodySegments> segmentDurability {};
 };
 
 struct Creature {
@@ -154,6 +173,7 @@ struct Creature {
     std::array<Vec2, kBodySegments> bodyPoints {};
     std::array<Vec2, kBodySegments> bodyVelocities {};
     std::array<float, kBodySegments> bodyRadii {};
+    std::array<float, kBodySegments> segmentDamage {};
 };
 
 struct Bloom {
@@ -302,6 +322,11 @@ struct SelectionInfo {
     float substrateContact = 0.0f;
     float substrateShelter = 0.0f;
     float localShear = 0.0f;
+    float headIntegrity = 0.0f;
+    float tailIntegrity = 0.0f;
+    float finPlacement = 0.0f;
+    float tailLengthScale = 0.0f;
+    float tailFork = 0.0f;
     std::uint32_t lineageId = 0;
     std::uint32_t lineageParentId = 0;
     std::size_t lineagePopulation = 0;
@@ -351,6 +376,8 @@ struct CreatureSnapshot {
     float substrateProximity = 0.0f;
     float substrateShelter = 0.0f;
     float localShear = 0.0f;
+    float headIntegrity = 0.0f;
+    float tailIntegrity = 0.0f;
 };
 
 struct LineageSnapshot {

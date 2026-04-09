@@ -447,6 +447,8 @@ void printTextCreatureSnapshot(const char* label, const alife::CreatureSnapshot&
         << " age=" << snapshot.age
         << " mass=" << snapshot.mass
         << " body=" << snapshot.majorRadius << "x" << snapshot.minorRadius
+        << " head=" << snapshot.headIntegrity
+        << " tail=" << snapshot.tailIntegrity
         << " shelter=" << snapshot.substrateShelter
         << " shear=" << snapshot.localShear
         << '\n';
@@ -555,6 +557,8 @@ void printJsonCreatureSnapshot(const alife::CreatureSnapshot& snapshot) {
         << ",\"aggression\":" << snapshot.aggression
         << ",\"substrate_proximity\":" << snapshot.substrateProximity
         << ",\"substrate_shelter\":" << snapshot.substrateShelter
+        << ",\"head_integrity\":" << snapshot.headIntegrity
+        << ",\"tail_integrity\":" << snapshot.tailIntegrity
         << ",\"local_shear\":" << snapshot.localShear
         << "}";
 }

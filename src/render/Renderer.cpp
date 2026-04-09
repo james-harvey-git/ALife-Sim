@@ -606,6 +606,10 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     };
 
     auto drawCreature = [&](const Creature& creature, bool selected) {
+        const auto segmentIntegrity = [&](int segmentIndex) {
+            const float durability = std::max(creature.traits.segmentDurability[segmentIndex], 1.0f);
+            return clamp01(1.0f - creature.segmentDamage[segmentIndex] / durability);
+        };
         const SDL_Color body = hsv(
             creature.genome.morphology.hue,
             lerp(0.42f, 0.82f, creature.genome.morphology.armor),
@@ -652,7 +656,14 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
             const SDL_FPoint point = wrappedPointToScreen(creature.bodyPoints[segmentIndex]);
             const float radius = creature.bodyRadii[segmentIndex] * worldScale;
             const float shade = lerp(0.78f, 1.05f, 1.0f - static_cast<float>(segmentIndex) / static_cast<float>(kBodySegments - 1));
-            const SDL_Color segmentColor = tint(body, shade, 240);
+            const float integrity = segmentIntegrity(segmentIndex);
+            SDL_Color segmentColor = tint(body, shade * lerp(0.7f, 1.0f, integrity), 240);
+            if (integrity < 0.92f) {
+                const SDL_Color wound = hsv(0.015f, 0.72f, lerp(0.36f, 0.74f, 1.0f - integrity), 210);
+                segmentColor.r = static_cast<std::uint8_t>((static_cast<int>(segmentColor.r) + static_cast<int>(wound.r)) / 2);
+                segmentColor.g = static_cast<std::uint8_t>((static_cast<int>(segmentColor.g) + static_cast<int>(wound.g)) / 2);
+                segmentColor.b = static_cast<std::uint8_t>((static_cast<int>(segmentColor.b) + static_cast<int>(wound.b)) / 2);
+            }
             fillEllipse(renderer_, point.x, point.y, radius * 1.08f, radius * 0.9f, segmentColor);
             fillEllipse(renderer_, point.x - radius * 0.12f, point.y, radius * 0.56f, radius * 0.42f, shadow);
         }
@@ -660,18 +671,42 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         const Vec2 forwardVector {std::cos(creature.angle), std::sin(creature.angle)};
         const Vec2 sideVector {-forwardVector.y, forwardVector.x};
 
-        const Vec2 finBaseA = creature.bodyPoints[1];
-        const Vec2 finBaseB = creature.bodyPoints[2];
-        const Vec2 finTipTop = finBaseA + sideVector * creature.traits.finSpan - forwardVector * creature.traits.segmentSpacing * 0.2f;
-        const Vec2 finTipBottom = finBaseA - sideVector * creature.traits.finSpan - forwardVector * creature.traits.segmentSpacing * 0.2f;
+        const int finLeadSegment = std::clamp(
+            1 + static_cast<int>(std::round(creature.traits.finPlacement * static_cast<float>(kBodySegments - 2))),
+            1,
+            kBodySegments - 2
+        );
+        const Vec2 finBaseA = creature.bodyPoints[finLeadSegment];
+        const Vec2 finBaseB = creature.bodyPoints[std::min(kBodySegments - 1, finLeadSegment + 1)];
+        const float finIntegrity = 0.5f * (segmentIntegrity(finLeadSegment) + segmentIntegrity(std::min(kBodySegments - 1, finLeadSegment + 1)));
+        const Vec2 finTipTop = finBaseA + sideVector * creature.traits.finSpan * lerp(0.55f, 1.0f, finIntegrity)
+            - forwardVector * creature.traits.segmentSpacing * 0.2f;
+        const Vec2 finTipBottom = finBaseA - sideVector * creature.traits.finSpan * lerp(0.55f, 1.0f, finIntegrity)
+            - forwardVector * creature.traits.segmentSpacing * 0.2f;
         fillTriangle(renderer_, wrappedPointToScreen(finBaseA), wrappedPointToScreen(finTipTop), wrappedPointToScreen(finBaseB), accent);
         fillTriangle(renderer_, wrappedPointToScreen(finBaseA), wrappedPointToScreen(finTipBottom), wrappedPointToScreen(finBaseB), accent);
 
         const Vec2 tailBase = creature.bodyPoints[kBodySegments - 1];
         const Vec2 tailAnchor = creature.bodyPoints[kBodySegments - 2];
-        const Vec2 tailDirection = normalize(tailBase - tailAnchor);
+        Vec2 wrappedTailDelta {
+            tailBase.x - tailAnchor.x,
+            tailBase.y - tailAnchor.y
+        };
+        if (wrappedTailDelta.x > simulation.worldWidth() * 0.5f) {
+            wrappedTailDelta.x -= simulation.worldWidth();
+        } else if (wrappedTailDelta.x < -simulation.worldWidth() * 0.5f) {
+            wrappedTailDelta.x += simulation.worldWidth();
+        }
+        if (wrappedTailDelta.y > simulation.worldHeight() * 0.5f) {
+            wrappedTailDelta.y -= simulation.worldHeight();
+        } else if (wrappedTailDelta.y < -simulation.worldHeight() * 0.5f) {
+            wrappedTailDelta.y += simulation.worldHeight();
+        }
+        const Vec2 tailDirection = normalize(wrappedTailDelta);
         const Vec2 tailSide {-tailDirection.y, tailDirection.x};
-        const float tailSpan = creature.bodyRadii[kBodySegments - 1] * 1.8f;
+        const float tailIntegrity = segmentIntegrity(kBodySegments - 1);
+        const float tailSpan = creature.bodyRadii[kBodySegments - 1] * (1.3f + creature.traits.tailFork)
+            * lerp(0.55f, 1.0f, tailIntegrity);
         const Vec2 tailTip = tailBase - tailDirection * (creature.traits.segmentSpacing * 1.4f);
         fillTriangle(
             renderer_,
@@ -681,7 +716,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
             accent
         );
 
-        const Vec2 jawBase = creature.bodyPoints[0] + forwardVector * (creature.bodyRadii[0] * 0.8f);
+        const Vec2 jawBase = creature.bodyPoints[0] + forwardVector * (creature.bodyRadii[0] * (0.48f + creature.traits.jawOffset));
         const Vec2 jawTip = jawBase + forwardVector * (creature.traits.biteReach * 0.55f);
         const Vec2 jawSide = sideVector * (creature.bodyRadii[0] * lerp(0.2f, 0.5f, creature.genome.morphology.jawArc));
         fillTriangle(renderer_, wrappedPointToScreen(jawBase + jawSide), wrappedPointToScreen(jawTip), wrappedPointToScreen(jawBase - jawSide), shell);
@@ -956,7 +991,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     drawCard(selectionCard, "Selection");
     selectionViewport_ = {selectionCard.x + 10.0f, selectionCard.y + 32.0f, selectionCard.w - 20.0f, selectionCard.h - 42.0f};
 
-    const float selectionContentHeight = info.valid ? 339.0f : 150.0f;
+    const float selectionContentHeight = info.valid ? 359.0f : 150.0f;
     const float maxSelectionScroll = std::max(0.0f, selectionContentHeight - selectionViewport_.h);
     selectionScroll_ = std::clamp(selectionScroll_, 0.0f, maxSelectionScroll);
 
@@ -990,9 +1025,28 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "fin " + formatFloat(info.finSpan, 1) + "  spacing " + formatFloat(info.segmentSpacing, 1) + "  wave " + formatFloat(info.tailWaveAmplitude, 2), {219, 226, 233, 255});
         sy += 18.0f;
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "fin pos " + formatFloat(info.finPlacement, 2)
+                + "  tail len " + formatFloat(info.tailLengthScale, 2)
+                + "  fork " + formatFloat(info.tailFork, 2),
+            {219, 226, 233, 255}
+        );
+        sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "sensor " + formatFloat(info.sensorRange, 1) + "  bite " + formatFloat(info.biteDamage, 1) + "  graze " + formatFloat(info.grazeRate, 1), {219, 226, 233, 255});
         sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "plant " + formatFloat(info.plantAffinity, 2) + "  meat " + formatFloat(info.meatAffinity, 2) + "  aggr " + formatFloat(info.aggression, 2), {219, 226, 233, 255});
+        sy += 18.0f;
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "head integ " + formatFloat(info.headIntegrity, 2)
+                + "  tail integ " + formatFloat(info.tailIntegrity, 2),
+            {210, 189, 179, 255}
+        );
         sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "upkeep " + formatFloat(info.upkeep, 1) + "  repro " + formatFloat(info.reproductionThreshold, 1), {179, 194, 210, 255});
         sy += 18.0f;

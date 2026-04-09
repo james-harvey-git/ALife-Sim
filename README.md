@@ -10,7 +10,7 @@ This repository is a fresh start from the older predator/prey project. Instead o
 - Physics-first phenotype model where geometry drives movement and interaction
 - Continuous grazing, scavenging, and hunting tradeoffs instead of discrete diets
 - Segmented procedural sprite rendering tied directly to evolved body traits
-- Articulated body chains that lag, bend, and couple to local flow
+- Articulated body chains that lag, bend, and now feed back into propulsion and turning through regional hydrodynamics
 - Reef-like substrate structures that create shelter, edge shear, and nutrient pockets
 - Reef wakes now create lee-shelter niches that reduce local flow behind structures
 - Depletable substrate nutrients that blooms and grazers compete over
@@ -40,14 +40,17 @@ The first playable milestone in this repo includes:
 - reef wakes that accumulate sheltered nutrient pockets downstream of structures
 - sparse topology-evolving controllers with innovation-aware structural mutations and recurrent memory inputs
 - segmented phenotypes with articulated body chains, flow-coupled lag, and body-part collision envelopes
+- richer morphology genes for body taper, fin placement, tail length/forking, jaw offset, and armor distribution
+- per-segment drag, drive, stiffness, armor, durability, and mass profiles derived from morphology
+- regional damage that now penalizes head- and tail-dependent performance instead of being only a flat health number
 - reef-aware observations including substrate proximity, lee shelter, and local shear
 - grazing, carrion feeding, and live predation
 - reproduction with mutation from a single ancestor genome, tempered by recent foraging success
 - branching lineage tracking for major brain-topology divergences
-- native HUD with history graphs, ecology drift readouts, lineage telemetry, live brain topology overlay, and lineage-aware observer controls
+- native HUD with history graphs, ecology drift readouts, lineage telemetry, live brain topology overlay, regional integrity readouts, and lineage-aware observer controls
 - scrollable selection inspector plus habitat-field overlay modes for QA and debugging
 
-This is intentionally still an early foundation. The long-term plan is to grow from these articulated soft-body approximations toward richer jointed morphologies, stronger environmental physics, and deeper lineage/ecology observability. The reef habitat system is the first pass at structured substrate physics and still needs balance work across long-run seeds.
+This is intentionally still an early foundation. The sim has now entered Phase 1 of the roadmap with a first body-physics milestone: morphology drives segment-level hydrodynamics and regional injury, but the body is still a compact chain model rather than a fully constraint-solved multi-part organism. The next body-physics steps are deeper joint mechanics, more evolved body-plan freedom, and stronger substrate/contact specialization.
 
 Phase 0 of the roadmap is now in place: the sim has grouped configuration, state persistence that includes config/RNG/history, repeatable multi-seed headless runs, named benchmark presets, structured snapshots, and regression tests for smoke, save/load round-trip, and configured determinism.
 

@@ -44,7 +44,9 @@ The long-term goal is not a scripted predator/prey toy. The goal is a watchable,
 - Single ancestral species at reset.
 - Continuous grazer/scavenger/hunter tradeoffs.
 - Articulated segmented body chains with persistent per-segment state, flow-coupled lag, and segment-aware collisions.
+- Phase 1 body-physics work has started: morphology now also drives regional segment radii, mass, drag, stiffness, tail drive, fin placement, tail shape, and body-region durability.
 - Morphology-derived thrust, drag, turning, bite reach, sensing, upkeep, and reproduction thresholds.
+- Damage is now partly regional: head and tail injury can degrade sensing/feeding and locomotion instead of only subtracting flat health.
 - Toroidal world with a depletable substrate nutrient reservoir, current field, reef substrate, blooms, and carrion.
 - Sparse topology-evolving controller with innovation-aware structural mutations, bucketed sensory inputs, and recurrent memory channels.
 - Reef habitat modulates local flow, nutrient growth, and contact physics, and creatures now observe substrate proximity plus local shear.
@@ -72,6 +74,7 @@ If the answer is "only by adding a special-case species rule," that is usually a
 These are especially aligned with the current direction:
 
 - Deepen the articulated-body model so appendages/fins/tails contribute more directly to propulsion and maneuvering.
+- Continue Phase 1 from the new regional-body baseline rather than reverting to scalar body stats.
 - Add more physically meaningful environmental structure such as substrate, shelter, shear, or obstacle interaction.
 - Add lineage and clade observability so long-term evolutionary structure is easier to inspect.
 - Introduce richer environmental physics instead of lots of ecology-specific hand tuning.
