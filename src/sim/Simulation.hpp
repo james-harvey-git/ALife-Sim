@@ -177,6 +177,51 @@ struct Reef {
     float shear = 0.5f;
 };
 
+struct WorldConfig {
+    float width = 2400.0f;
+    float height = 1800.0f;
+    std::size_t initialPopulation = 180;
+    std::size_t maxPopulation = 900;
+};
+
+struct EnvironmentConfig {
+    std::size_t targetBlooms = 220;
+    std::size_t targetReefs = 8;
+    float bloomRespawnChance = 1.75f;
+    float spatialCellSize = 120.0f;
+    int nutrientGridWidth = 96;
+    int nutrientGridHeight = 72;
+    float nutrientCellCapacity = 5.0f;
+    float nutrientRecoveryRate = 0.42f;
+    float nutrientDiffusionRate = 0.16f;
+};
+
+struct EvolutionConfig {
+    float weightMutationBaseChance = 0.035f;
+    float weightMutationVolatilityScale = 0.075f;
+    float addConnectionBaseChance = 0.05f;
+    float addConnectionVolatilityScale = 0.09f;
+    float addHiddenBaseChance = 0.012f;
+    float addHiddenVolatilityScale = 0.035f;
+    float removeConnectionBaseChance = 0.016f;
+    float removeConnectionVolatilityScale = 0.035f;
+    float lineageBranchHiddenNoveltyThreshold = 0.12f;
+    int lineageBranchStructuralDelta = 3;
+    float lineageBranchCompatibilityThreshold = 0.52f;
+    float lineageBranchStructuralCompatibilityThreshold = 0.3f;
+};
+
+struct DebugConfig {
+    bool autoSelectOnReset = true;
+};
+
+struct SimulationConfig {
+    WorldConfig world {};
+    EnvironmentConfig environment {};
+    EvolutionConfig evolution {};
+    DebugConfig debug {};
+};
+
 struct Stats {
     std::size_t population = 0;
     std::size_t blooms = 0;
@@ -324,6 +369,7 @@ struct WorldSnapshot {
     float timeSeconds = 0.0f;
     float worldWidth = 0.0f;
     float worldHeight = 0.0f;
+    SimulationConfig config {};
     std::size_t population = 0;
     std::size_t blooms = 0;
     std::size_t carrion = 0;
@@ -360,7 +406,7 @@ struct LineageRecord {
 
 class Simulation {
 public:
-    Simulation();
+    explicit Simulation(const SimulationConfig& config = {});
 
     void reset(std::uint64_t seed = 1);
     void step(float dt);
@@ -386,6 +432,7 @@ public:
     float worldWidth() const;
     float worldHeight() const;
     float timeSeconds() const;
+    const SimulationConfig& config() const;
     float sampleNutrient(float x, float y) const;
     Vec2 sampleCurrent(float x, float y) const;
     EnvironmentProbe probeEnvironment(float x, float y) const;
@@ -397,6 +444,7 @@ public:
     WorldSnapshot worldSnapshot(std::size_t topLineageCount = 5) const;
 
 private:
+    SimulationConfig config_ {};
     float worldWidth_ = 2400.0f;
     float worldHeight_ = 1800.0f;
     float timeSeconds_ = 0.0f;

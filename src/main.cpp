@@ -26,6 +26,12 @@ enum class BenchmarkPreset {
     Stress
 };
 
+enum class ConfigPreset {
+    Default,
+    ReefDense,
+    OpenWater
+};
+
 struct BenchmarkScenario {
     const char* name = "custom";
     int smokeSteps = 3600;
@@ -38,15 +44,19 @@ struct CliOptions {
     bool batchRun = false;
     bool benchmarkRun = false;
     bool snapshotOutput = false;
+    bool configTouched = false;
     std::uint64_t seed = 1;
     int smokeSteps = 3600;
     int batchCount = 8;
     int seedStride = 1;
     ReportFormat reportFormat = ReportFormat::Text;
     BenchmarkPreset benchmarkPreset = BenchmarkPreset::None;
+    ConfigPreset configPreset = ConfigPreset::Default;
     int snapshotLineageCount = 5;
+    std::string configPresetLabel = "default";
     std::string loadStatePath {};
     std::string saveStatePath {};
+    alife::SimulationConfig simulationConfig {};
 };
 
 BenchmarkPreset parseBenchmarkPreset(const std::string& value) {
@@ -73,6 +83,52 @@ BenchmarkScenario benchmarkScenarioForPreset(BenchmarkPreset preset) {
         default:
             return BenchmarkScenario {};
     }
+}
+
+ConfigPreset parseConfigPreset(const std::string& value) {
+    if (value == "reef-dense") {
+        return ConfigPreset::ReefDense;
+    }
+    if (value == "open-water") {
+        return ConfigPreset::OpenWater;
+    }
+    return ConfigPreset::Default;
+}
+
+const char* labelForConfigPreset(ConfigPreset preset) {
+    switch (preset) {
+        case ConfigPreset::ReefDense:
+            return "reef-dense";
+        case ConfigPreset::OpenWater:
+            return "open-water";
+        default:
+            return "default";
+    }
+}
+
+alife::SimulationConfig simulationConfigForPreset(ConfigPreset preset) {
+    alife::SimulationConfig config {};
+    switch (preset) {
+        case ConfigPreset::ReefDense:
+            config.environment.targetReefs = 12;
+            config.environment.targetBlooms = 210;
+            config.environment.bloomRespawnChance = 1.55f;
+            config.environment.nutrientRecoveryRate = 0.48f;
+            config.environment.nutrientDiffusionRate = 0.18f;
+            config.environment.spatialCellSize = 108.0f;
+            break;
+        case ConfigPreset::OpenWater:
+            config.environment.targetReefs = 4;
+            config.environment.targetBlooms = 260;
+            config.environment.bloomRespawnChance = 1.95f;
+            config.environment.nutrientRecoveryRate = 0.46f;
+            config.environment.nutrientDiffusionRate = 0.22f;
+            config.environment.spatialCellSize = 136.0f;
+            break;
+        default:
+            break;
+    }
+    return config;
 }
 
 void applyBenchmarkPreset(CliOptions& options) {
@@ -123,6 +179,63 @@ CliOptions parseArgs(int argc, char** argv) {
             options.loadStatePath = argv[++index];
         } else if (argument == "--save-state" && index + 1 < argc) {
             options.saveStatePath = argv[++index];
+        } else if (argument == "--config-preset" && index + 1 < argc) {
+            options.configPreset = parseConfigPreset(argv[++index]);
+            options.configPresetLabel = labelForConfigPreset(options.configPreset);
+            options.simulationConfig = simulationConfigForPreset(options.configPreset);
+            options.configTouched = options.configPreset != ConfigPreset::Default;
+        } else if (argument == "--world-width" && index + 1 < argc) {
+            options.simulationConfig.world.width = std::max(320.0f, static_cast<float>(std::atof(argv[++index])));
+            options.configTouched = true;
+        } else if (argument == "--world-height" && index + 1 < argc) {
+            options.simulationConfig.world.height = std::max(240.0f, static_cast<float>(std::atof(argv[++index])));
+            options.configTouched = true;
+        } else if (argument == "--initial-population" && index + 1 < argc) {
+            options.simulationConfig.world.initialPopulation = static_cast<std::size_t>(std::max(1, std::atoi(argv[++index])));
+            options.configTouched = true;
+        } else if (argument == "--max-population" && index + 1 < argc) {
+            options.simulationConfig.world.maxPopulation = static_cast<std::size_t>(std::max(1, std::atoi(argv[++index])));
+            options.configTouched = true;
+        } else if (argument == "--target-blooms" && index + 1 < argc) {
+            options.simulationConfig.environment.targetBlooms = static_cast<std::size_t>(std::max(1, std::atoi(argv[++index])));
+            options.configTouched = true;
+        } else if (argument == "--target-reefs" && index + 1 < argc) {
+            options.simulationConfig.environment.targetReefs = static_cast<std::size_t>(std::max(1, std::atoi(argv[++index])));
+            options.configTouched = true;
+        } else if (argument == "--bloom-respawn" && index + 1 < argc) {
+            options.simulationConfig.environment.bloomRespawnChance = std::max(0.0f, static_cast<float>(std::atof(argv[++index])));
+            options.configTouched = true;
+        } else if (argument == "--spatial-cell-size" && index + 1 < argc) {
+            options.simulationConfig.environment.spatialCellSize = std::max(16.0f, static_cast<float>(std::atof(argv[++index])));
+            options.configTouched = true;
+        } else if (argument == "--nutrient-grid-width" && index + 1 < argc) {
+            options.simulationConfig.environment.nutrientGridWidth = std::max(8, std::atoi(argv[++index]));
+            options.configTouched = true;
+        } else if (argument == "--nutrient-grid-height" && index + 1 < argc) {
+            options.simulationConfig.environment.nutrientGridHeight = std::max(8, std::atoi(argv[++index]));
+            options.configTouched = true;
+        } else if (argument == "--nutrient-recovery" && index + 1 < argc) {
+            options.simulationConfig.environment.nutrientRecoveryRate = std::max(0.0f, static_cast<float>(std::atof(argv[++index])));
+            options.configTouched = true;
+        } else if (argument == "--nutrient-diffusion" && index + 1 < argc) {
+            options.simulationConfig.environment.nutrientDiffusionRate = std::max(0.0f, static_cast<float>(std::atof(argv[++index])));
+            options.configTouched = true;
+        } else if (argument == "--weight-mutation-base" && index + 1 < argc) {
+            options.simulationConfig.evolution.weightMutationBaseChance =
+                std::clamp(static_cast<float>(std::atof(argv[++index])), 0.0f, 1.0f);
+            options.configTouched = true;
+        } else if (argument == "--add-connection-base" && index + 1 < argc) {
+            options.simulationConfig.evolution.addConnectionBaseChance =
+                std::clamp(static_cast<float>(std::atof(argv[++index])), 0.0f, 1.0f);
+            options.configTouched = true;
+        } else if (argument == "--add-hidden-base" && index + 1 < argc) {
+            options.simulationConfig.evolution.addHiddenBaseChance =
+                std::clamp(static_cast<float>(std::atof(argv[++index])), 0.0f, 1.0f);
+            options.configTouched = true;
+        } else if (argument == "--remove-connection-base" && index + 1 < argc) {
+            options.simulationConfig.evolution.removeConnectionBaseChance =
+                std::clamp(static_cast<float>(std::atof(argv[++index])), 0.0f, 1.0f);
+            options.configTouched = true;
         } else if (argument == "--benchmark-preset" && index + 1 < argc) {
             options.benchmarkRun = true;
             options.benchmarkPreset = parseBenchmarkPreset(argv[++index]);
@@ -137,11 +250,15 @@ CliOptions parseArgs(int argc, char** argv) {
     }
 
     applyBenchmarkPreset(options);
+    if (options.configTouched && options.configPreset == ConfigPreset::Default) {
+        options.configPresetLabel = "custom";
+    }
     return options;
 }
 
 struct RunSummary {
     std::uint64_t seed = 0;
+    std::string configLabel = "default";
     int steps = 0;
     double wallSeconds = 0.0;
     double stepsPerSecond = 0.0;
@@ -168,6 +285,7 @@ struct RunSummary {
     float feedPredation = 0.0f;
     float spendUpkeep = 0.0f;
     float spendReproduction = 0.0f;
+    alife::SimulationConfig config {};
     bool hasSnapshot = false;
     alife::WorldSnapshot snapshot {};
 };
@@ -203,6 +321,7 @@ RunSummary runSummaryForSimulation(
     int steps,
     bool captureSnapshot,
     int snapshotLineageCount,
+    const std::string& configLabel,
     const std::string& saveStatePath
 ) {
     constexpr float kStep = 1.0f / 60.0f;
@@ -216,6 +335,7 @@ RunSummary runSummaryForSimulation(
     const alife::Stats& stats = simulation.stats();
     RunSummary summary {};
     summary.seed = simulation.worldSnapshot(0).seed;
+    summary.configLabel = configLabel;
     summary.steps = steps;
     summary.wallSeconds = std::chrono::duration<double>(wallEnd - wallStart).count();
     summary.stepsPerSecond = summary.wallSeconds > 1e-9
@@ -241,6 +361,7 @@ RunSummary runSummaryForSimulation(
     summary.feedPredation = stats.energyFromPredation;
     summary.spendUpkeep = stats.energySpentOnUpkeep;
     summary.spendReproduction = stats.energySpentOnReproduction;
+    summary.config = simulation.config();
 
     for (const auto& creature : simulation.creatures()) {
         summary.averageEnergy += creature.energy;
@@ -331,6 +452,56 @@ void printTextCreatureSnapshot(const char* label, const alife::CreatureSnapshot&
         << '\n';
 }
 
+void printTextConfigSummary(const alife::SimulationConfig& config) {
+    std::cout
+        << "  config world=" << config.world.width << "x" << config.world.height
+        << " init_pop=" << config.world.initialPopulation
+        << " max_pop=" << config.world.maxPopulation
+        << " blooms=" << config.environment.targetBlooms
+        << " reefs=" << config.environment.targetReefs
+        << " grid=" << config.environment.nutrientGridWidth << "x" << config.environment.nutrientGridHeight
+        << " recovery=" << config.environment.nutrientRecoveryRate
+        << " diffusion=" << config.environment.nutrientDiffusionRate
+        << " bloom_respawn=" << config.environment.bloomRespawnChance
+        << " add_conn=" << config.evolution.addConnectionBaseChance
+        << " add_hidden=" << config.evolution.addHiddenBaseChance
+        << " remove_conn=" << config.evolution.removeConnectionBaseChance
+        << '\n';
+}
+
+void printJsonConfig(const alife::SimulationConfig& config) {
+    std::cout
+        << "{\"world\":{\"width\":" << config.world.width
+        << ",\"height\":" << config.world.height
+        << ",\"initial_population\":" << config.world.initialPopulation
+        << ",\"max_population\":" << config.world.maxPopulation
+        << "},\"environment\":{\"target_blooms\":" << config.environment.targetBlooms
+        << ",\"target_reefs\":" << config.environment.targetReefs
+        << ",\"bloom_respawn_chance\":" << config.environment.bloomRespawnChance
+        << ",\"spatial_cell_size\":" << config.environment.spatialCellSize
+        << ",\"nutrient_grid_width\":" << config.environment.nutrientGridWidth
+        << ",\"nutrient_grid_height\":" << config.environment.nutrientGridHeight
+        << ",\"nutrient_cell_capacity\":" << config.environment.nutrientCellCapacity
+        << ",\"nutrient_recovery_rate\":" << config.environment.nutrientRecoveryRate
+        << ",\"nutrient_diffusion_rate\":" << config.environment.nutrientDiffusionRate
+        << "},\"evolution\":{\"weight_mutation_base_chance\":" << config.evolution.weightMutationBaseChance
+        << ",\"weight_mutation_volatility_scale\":" << config.evolution.weightMutationVolatilityScale
+        << ",\"add_connection_base_chance\":" << config.evolution.addConnectionBaseChance
+        << ",\"add_connection_volatility_scale\":" << config.evolution.addConnectionVolatilityScale
+        << ",\"add_hidden_base_chance\":" << config.evolution.addHiddenBaseChance
+        << ",\"add_hidden_volatility_scale\":" << config.evolution.addHiddenVolatilityScale
+        << ",\"remove_connection_base_chance\":" << config.evolution.removeConnectionBaseChance
+        << ",\"remove_connection_volatility_scale\":" << config.evolution.removeConnectionVolatilityScale
+        << ",\"lineage_branch_hidden_novelty_threshold\":" << config.evolution.lineageBranchHiddenNoveltyThreshold
+        << ",\"lineage_branch_structural_delta\":" << config.evolution.lineageBranchStructuralDelta
+        << ",\"lineage_branch_compatibility_threshold\":" << config.evolution.lineageBranchCompatibilityThreshold
+        << ",\"lineage_branch_structural_compatibility_threshold\":"
+        << config.evolution.lineageBranchStructuralCompatibilityThreshold
+        << "},\"debug\":{\"auto_select_on_reset\":"
+        << (config.debug.autoSelectOnReset ? "true" : "false")
+        << "}}";
+}
+
 void printTextWorldSnapshot(const alife::WorldSnapshot& snapshot) {
     std::cout
         << "  snapshot seed=" << snapshot.seed
@@ -342,6 +513,7 @@ void printTextWorldSnapshot(const alife::WorldSnapshot& snapshot) {
         << " reefs=" << snapshot.reefs
         << " lineages=" << snapshot.activeLineages
         << '\n';
+    printTextConfigSummary(snapshot.config);
     printTextCreatureSnapshot("selected", snapshot.selectedCreature);
     printTextCreatureSnapshot("top_energy", snapshot.topEnergyCreature);
     if (!snapshot.topLineages.empty()) {
@@ -414,6 +586,9 @@ void printJsonWorldSnapshot(const alife::WorldSnapshot& snapshot) {
         << ",\"time_seconds\":" << snapshot.timeSeconds
         << ",\"world_width\":" << snapshot.worldWidth
         << ",\"world_height\":" << snapshot.worldHeight
+        << ",\"config\":";
+    printJsonConfig(snapshot.config);
+    std::cout
         << ",\"population\":" << snapshot.population
         << ",\"blooms\":" << snapshot.blooms
         << ",\"carrion\":" << snapshot.carrion
@@ -435,7 +610,8 @@ void printJsonWorldSnapshot(const alife::WorldSnapshot& snapshot) {
 
 void printSmokeSummary(const RunSummary& summary, bool snapshotOutput) {
     std::cout
-        << "smoke-test population=" << summary.population
+        << "smoke-test config=" << summary.configLabel
+        << " population=" << summary.population
         << " blooms=" << summary.blooms
         << " carrion=" << summary.carrion
         << " reefs=" << summary.reefs
@@ -460,6 +636,7 @@ void printSmokeSummary(const RunSummary& summary, bool snapshotOutput) {
         << " steps_per_second=" << summary.stepsPerSecond
         << " avg_repro_threshold=" << summary.averageReproductionThreshold
         << '\n';
+    printTextConfigSummary(summary.config);
     if (snapshotOutput && summary.hasSnapshot) {
         printTextWorldSnapshot(summary.snapshot);
     }
@@ -470,6 +647,7 @@ void printJsonRunSummary(const RunSummary& summary, bool snapshotOutput) {
         << std::fixed << std::setprecision(6)
         << "{\"kind\":\"run\""
         << ",\"seed\":" << summary.seed
+        << ",\"config_label\":\"" << summary.configLabel << "\""
         << ",\"steps\":" << summary.steps
         << ",\"wall_seconds\":" << summary.wallSeconds
         << ",\"steps_per_second\":" << summary.stepsPerSecond
@@ -496,6 +674,9 @@ void printJsonRunSummary(const RunSummary& summary, bool snapshotOutput) {
         << ",\"spend_upkeep\":" << summary.spendUpkeep
         << ",\"spend_reproduction\":" << summary.spendReproduction
         << ",\"avg_reproduction_threshold\":" << summary.averageReproductionThreshold
+        << ",\"config\":";
+    printJsonConfig(summary.config);
+    std::cout
         << ",\"snapshot\":";
     if (snapshotOutput && summary.hasSnapshot) {
         printJsonWorldSnapshot(summary.snapshot);
@@ -516,7 +697,11 @@ void printTextBatchSummary(
         << " steps=" << (runs.empty() ? 0 : runs.front().steps)
         << " start_seed=" << (runs.empty() ? 0 : runs.front().seed)
         << " scenario=" << scenarioLabel
+        << " config=" << (runs.empty() ? "default" : runs.front().configLabel)
         << '\n';
+    if (!runs.empty()) {
+        printTextConfigSummary(runs.front().config);
+    }
     for (const RunSummary& run : runs) {
         std::cout
             << "seed=" << run.seed
@@ -566,6 +751,14 @@ void printJsonBatchSummary(
         << ",\"steps\":" << (runs.empty() ? 0 : runs.front().steps)
         << ",\"start_seed\":" << (runs.empty() ? 0 : runs.front().seed)
         << ",\"scenario\":\"" << scenarioLabel << "\""
+        << ",\"config_label\":\"" << (runs.empty() ? "default" : runs.front().configLabel) << "\"";
+    if (!runs.empty()) {
+        std::cout << ",\"config\":";
+        printJsonConfig(runs.front().config);
+    } else {
+        std::cout << ",\"config\":null";
+    }
+    std::cout
         << ",\"extinct_runs\":" << batch.extinctRuns
         << ",\"total_wall_seconds\":" << batch.totalWallSeconds
         << ",\"mean_steps_per_second\":" << batch.meanStepsPerSecond
@@ -589,9 +782,13 @@ int main(int argc, char** argv) {
         std::cerr << "Batch runs do not support --load-state or --save-state.\n";
         return 1;
     }
+    if (!options.loadStatePath.empty() && options.configTouched) {
+        std::cerr << "--load-state already carries saved simulation config; do not combine it with config preset/override flags.\n";
+        return 1;
+    }
 
     if (options.smokeTest) {
-        alife::Simulation simulation;
+        alife::Simulation simulation(options.simulationConfig);
         std::string error;
         if (!initializeSimulation(simulation, options, error)) {
             std::cerr << error << '\n';
@@ -603,6 +800,7 @@ int main(int argc, char** argv) {
             options.smokeSteps,
             options.snapshotOutput,
             options.snapshotLineageCount,
+            options.configPresetLabel,
             options.saveStatePath
         );
         if (options.reportFormat == ReportFormat::JsonLines) {
@@ -619,13 +817,14 @@ int main(int argc, char** argv) {
 
         for (int runIndex = 0; runIndex < options.batchCount; ++runIndex) {
             const std::uint64_t runSeed = options.seed + static_cast<std::uint64_t>(runIndex) * static_cast<std::uint64_t>(options.seedStride);
-            alife::Simulation simulation;
+            alife::Simulation simulation(options.simulationConfig);
             simulation.reset(runSeed);
             const RunSummary summary = runSummaryForSimulation(
                 simulation,
                 options.smokeSteps,
                 options.snapshotOutput,
                 options.snapshotLineageCount,
+                options.configPresetLabel,
                 {}
             );
             runs.push_back(summary);
@@ -651,7 +850,7 @@ int main(int argc, char** argv) {
         return batch.extinctRuns == 0 ? 0 : 1;
     }
 
-    alife::Simulation simulation;
+    alife::Simulation simulation(options.simulationConfig);
     std::string error;
     if (!initializeSimulation(simulation, options, error)) {
         std::cerr << error << '\n';

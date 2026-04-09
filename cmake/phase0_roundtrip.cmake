@@ -7,7 +7,17 @@ if(NOT DEFINED STATE_PATH)
 endif()
 
 execute_process(
-    COMMAND "${ALIFE_SIM_EXECUTABLE}" --smoke-test --seed 1 --smoke-steps 1800 --report-format jsonl --save-state "${STATE_PATH}"
+    COMMAND "${ALIFE_SIM_EXECUTABLE}"
+        --smoke-test
+        --seed 1
+        --smoke-steps 1800
+        --report-format jsonl
+        --config-preset open-water
+        --target-blooms 255
+        --target-reefs 5
+        --nutrient-diffusion 0.24
+        --remove-connection-base 0.02
+        --save-state "${STATE_PATH}"
     RESULT_VARIABLE save_result
     OUTPUT_VARIABLE save_output
     ERROR_VARIABLE save_error
@@ -27,7 +37,16 @@ if(NOT load_result EQUAL 0)
 endif()
 
 execute_process(
-    COMMAND "${ALIFE_SIM_EXECUTABLE}" --smoke-test --seed 1 --smoke-steps 3600 --report-format jsonl
+    COMMAND "${ALIFE_SIM_EXECUTABLE}"
+        --smoke-test
+        --seed 1
+        --smoke-steps 3600
+        --report-format jsonl
+        --config-preset open-water
+        --target-blooms 255
+        --target-reefs 5
+        --nutrient-diffusion 0.24
+        --remove-connection-base 0.02
     RESULT_VARIABLE direct_result
     OUTPUT_VARIABLE direct_output
     ERROR_VARIABLE direct_error
@@ -43,10 +62,12 @@ string(REGEX REPLACE "\"wall_seconds\":[0-9.eE+-]+," "" load_normalized "${load_
 string(REGEX REPLACE "\"steps_per_second\":[0-9.eE+-]+," "" load_normalized "${load_normalized}")
 string(REGEX REPLACE "\"steps\":[0-9]+," "" load_normalized "${load_normalized}")
 string(REGEX REPLACE "\"simulated_seconds\":[0-9.eE+-]+," "" load_normalized "${load_normalized}")
+string(REGEX REPLACE "\"config_label\":\"[^\"]+\"," "" load_normalized "${load_normalized}")
 string(REGEX REPLACE "\"wall_seconds\":[0-9.eE+-]+," "" direct_normalized "${direct_normalized}")
 string(REGEX REPLACE "\"steps_per_second\":[0-9.eE+-]+," "" direct_normalized "${direct_normalized}")
 string(REGEX REPLACE "\"steps\":[0-9]+," "" direct_normalized "${direct_normalized}")
 string(REGEX REPLACE "\"simulated_seconds\":[0-9.eE+-]+," "" direct_normalized "${direct_normalized}")
+string(REGEX REPLACE "\"config_label\":\"[^\"]+\"," "" direct_normalized "${direct_normalized}")
 
 if(NOT load_normalized STREQUAL direct_normalized)
     message(FATAL_ERROR "Round-trip persistence mismatch.\nLoaded:\n${load_output}\nDirect:\n${direct_output}")

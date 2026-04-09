@@ -49,6 +49,8 @@ The first playable milestone in this repo includes:
 
 This is intentionally still an early foundation. The long-term plan is to grow from these articulated soft-body approximations toward richer jointed morphologies, stronger environmental physics, and deeper lineage/ecology observability. The reef habitat system is the first pass at structured substrate physics and still needs balance work across long-run seeds.
 
+Phase 0 of the roadmap is now in place: the sim has grouped configuration, state persistence that includes config/RNG/history, repeatable multi-seed headless runs, named benchmark presets, structured snapshots, and regression tests for smoke, save/load round-trip, and configured determinism.
+
 ## Controls
 
 - `Space`: pause or resume
@@ -115,6 +117,13 @@ Run a named benchmark preset:
 ./build/alife_sim --benchmark --benchmark-preset ecology
 ```
 
+Run a named simulation config preset or targeted overrides:
+
+```bash
+./build/alife_sim --smoke-test --config-preset reef-dense
+./build/alife_sim --smoke-test --config-preset open-water --target-blooms 255 --target-reefs 5 --nutrient-diffusion 0.24
+```
+
 Capture richer world snapshots in headless output:
 
 ```bash
@@ -129,6 +138,8 @@ Save and resume a simulation state:
 ./build/alife_sim --smoke-test --load-state /tmp/alife_state.bin --smoke-steps 1800
 ```
 
+`--load-state` restores the saved simulation config as well as world/RNG/history state, so it should not be combined with `--config-preset` or config override flags.
+
 Current benchmark presets:
 
 - `quick`: short multi-seed regression probe
@@ -141,6 +152,13 @@ Run the built-in regression suite:
 cd build
 ctest --output-on-failure
 ```
+
+The Phase 0 regression suite currently covers:
+
+- a default smoke run
+- a named benchmark preset
+- save/load round-trip equivalence with a non-default config
+- configured determinism on repeated seeded runs
 
 ## Repo Layout
 

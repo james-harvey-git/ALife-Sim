@@ -34,7 +34,7 @@ The long-term goal is not a scripted predator/prey toy. The goal is a watchable,
   Native app loop, input handling, and `--smoke-test`.
 - [src/sim/Simulation.hpp](/Users/jamesharvey/Development/Personal-Code-Projects/ALife-Sim/src/sim/Simulation.hpp)
 - [src/sim/Simulation.cpp](/Users/jamesharvey/Development/Personal-Code-Projects/ALife-Sim/src/sim/Simulation.cpp)
-  Source of truth for genomes, traits, body geometry, controller updates, ecology, reproduction, and history.
+  Source of truth for genomes, grouped `SimulationConfig`, traits, body geometry, controller updates, ecology, reproduction, persistence, and history.
 - [src/render/Renderer.hpp](/Users/jamesharvey/Development/Personal-Code-Projects/ALife-Sim/src/render/Renderer.hpp)
 - [src/render/Renderer.cpp](/Users/jamesharvey/Development/Personal-Code-Projects/ALife-Sim/src/render/Renderer.cpp)
   Thin native rendering and HUD layer. Keep simulation rules out of here.
@@ -55,6 +55,7 @@ The long-term goal is not a scripted predator/prey toy. The goal is a watchable,
 - The app now boots with a subject selected, and the HUD exposes explicit observer picks (`random subject`, `top energy`, `dominant lineage`, `newest branch`) to support QA and watchability.
 - Observer selection is lineage-aware: when a watched creature dies, the sim should try to stay on that clade instead of immediately jumping to an unrelated organism.
 - The renderer also has habitat overlay modes (`V`) for visual QA of nutrient, lee-shelter, and shear fields.
+- Phase 0 backbone is now live: grouped config, save/load including config and RNG state, headless batch mode, structured world snapshots, and regression coverage for smoke, determinism, and round-trip persistence.
 
 ## Important Design Rule
 
@@ -117,6 +118,8 @@ Run headless smoke tests:
 ./build/alife_sim --batch-run --seed 1 --batch-count 5 --smoke-steps 10800 --report-format jsonl
 ./build/alife_sim --benchmark --benchmark-preset quick
 ./build/alife_sim --benchmark --benchmark-preset ecology
+./build/alife_sim --smoke-test --config-preset reef-dense
+./build/alife_sim --smoke-test --config-preset open-water --target-blooms 255 --target-reefs 5 --nutrient-diffusion 0.24
 ./build/alife_sim --benchmark --benchmark-preset quick --report-format jsonl --snapshot
 ./build/alife_sim --smoke-test --seed 1 --smoke-steps 1800 --save-state /tmp/alife_state.bin
 ./build/alife_sim --smoke-test --load-state /tmp/alife_state.bin --smoke-steps 1800
@@ -126,6 +129,7 @@ cd build && ctest --output-on-failure
 Use multiple seeds when changing simulation dynamics.
 Prefer the named benchmark presets for regression comparisons, and use `--snapshot` when a run needs richer world/lineage/focal-creature context.
 Use the round-trip save/load path and `ctest` suite when touching Phase 0 infrastructure.
+Do not combine `--load-state` with `--config-preset` or config override flags because persisted states already carry the saved config.
 
 ## Working Style
 

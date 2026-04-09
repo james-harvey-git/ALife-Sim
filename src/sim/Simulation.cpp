@@ -15,17 +15,6 @@ namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kTau = 6.28318530717958647692f;
-constexpr std::size_t kInitialPopulation = 180;
-constexpr std::size_t kMaxPopulation = 900;
-constexpr std::size_t kTargetBlooms = 220;
-constexpr std::size_t kTargetReefs = 8;
-constexpr float kBloomRespawnChance = 1.75f;
-constexpr float kSpatialCellSize = 120.0f;
-constexpr int kNutrientGridWidth = 96;
-constexpr int kNutrientGridHeight = 72;
-constexpr float kNutrientCellCapacity = 5.0f;
-constexpr float kNutrientRecoveryRate = 0.42f;
-constexpr float kNutrientDiffusionRate = 0.16f;
 constexpr std::uint32_t kInputNodeBase = 1;
 constexpr std::uint32_t kMemoryNodeBase = kInputNodeBase + kInputCount;
 constexpr std::uint32_t kOutputNodeBase = kMemoryNodeBase + kMemorySize;
@@ -35,7 +24,7 @@ using NodeKind = BrainGenome::NodeKind;
 using ConnectionGene = BrainGenome::ConnectionGene;
 
 constexpr char kSaveMagic[] = "ALIFESM1";
-constexpr std::uint32_t kSaveVersion = 1;
+constexpr std::uint32_t kSaveVersion = 2;
 
 template <typename T>
 bool writePod(std::ostream& stream, const T& value) {
@@ -264,8 +253,46 @@ int wrapGridCoord(int value, int size) {
     return value;
 }
 
-std::size_t nutrientIndex(int x, int y) {
-    return static_cast<std::size_t>(wrapGridCoord(y, kNutrientGridHeight) * kNutrientGridWidth + wrapGridCoord(x, kNutrientGridWidth));
+SimulationConfig sanitizeConfig(SimulationConfig config) {
+    config.world.width = std::max(320.0f, config.world.width);
+    config.world.height = std::max(240.0f, config.world.height);
+    config.world.initialPopulation = std::max<std::size_t>(1, config.world.initialPopulation);
+    config.world.maxPopulation = std::max(config.world.initialPopulation, config.world.maxPopulation);
+
+    config.environment.targetBlooms = std::max<std::size_t>(1, config.environment.targetBlooms);
+    config.environment.targetReefs = std::max<std::size_t>(1, config.environment.targetReefs);
+    config.environment.bloomRespawnChance = std::max(0.0f, config.environment.bloomRespawnChance);
+    config.environment.spatialCellSize = std::max(16.0f, config.environment.spatialCellSize);
+    config.environment.nutrientGridWidth = std::max(8, config.environment.nutrientGridWidth);
+    config.environment.nutrientGridHeight = std::max(8, config.environment.nutrientGridHeight);
+    config.environment.nutrientCellCapacity = std::max(0.1f, config.environment.nutrientCellCapacity);
+    config.environment.nutrientRecoveryRate = std::max(0.0f, config.environment.nutrientRecoveryRate);
+    config.environment.nutrientDiffusionRate = std::max(0.0f, config.environment.nutrientDiffusionRate);
+
+    config.evolution.weightMutationBaseChance = std::clamp(config.evolution.weightMutationBaseChance, 0.0f, 1.0f);
+    config.evolution.weightMutationVolatilityScale = std::max(0.0f, config.evolution.weightMutationVolatilityScale);
+    config.evolution.addConnectionBaseChance = std::clamp(config.evolution.addConnectionBaseChance, 0.0f, 1.0f);
+    config.evolution.addConnectionVolatilityScale = std::max(0.0f, config.evolution.addConnectionVolatilityScale);
+    config.evolution.addHiddenBaseChance = std::clamp(config.evolution.addHiddenBaseChance, 0.0f, 1.0f);
+    config.evolution.addHiddenVolatilityScale = std::max(0.0f, config.evolution.addHiddenVolatilityScale);
+    config.evolution.removeConnectionBaseChance = std::clamp(config.evolution.removeConnectionBaseChance, 0.0f, 1.0f);
+    config.evolution.removeConnectionVolatilityScale = std::max(0.0f, config.evolution.removeConnectionVolatilityScale);
+    config.evolution.lineageBranchHiddenNoveltyThreshold = std::max(0.0f, config.evolution.lineageBranchHiddenNoveltyThreshold);
+    config.evolution.lineageBranchStructuralDelta = std::max(1, config.evolution.lineageBranchStructuralDelta);
+    config.evolution.lineageBranchCompatibilityThreshold = std::max(0.0f, config.evolution.lineageBranchCompatibilityThreshold);
+    config.evolution.lineageBranchStructuralCompatibilityThreshold = std::max(
+        0.0f,
+        config.evolution.lineageBranchStructuralCompatibilityThreshold
+    );
+
+    return config;
+}
+
+std::size_t nutrientIndex(int x, int y, const EnvironmentConfig& environment) {
+    return static_cast<std::size_t>(
+        wrapGridCoord(y, environment.nutrientGridHeight) * environment.nutrientGridWidth
+        + wrapGridCoord(x, environment.nutrientGridWidth)
+    );
 }
 
 struct HabitatSample {
@@ -352,14 +379,15 @@ float sampleNutrientGridNormalized(
     float x,
     float y,
     float worldWidth,
-    float worldHeight
+    float worldHeight,
+    const EnvironmentConfig& environment
 ) {
     if (grid.empty()) {
         return 0.0f;
     }
 
-    const float gx = wrapAxis(x, worldWidth) / worldWidth * static_cast<float>(kNutrientGridWidth);
-    const float gy = wrapAxis(y, worldHeight) / worldHeight * static_cast<float>(kNutrientGridHeight);
+    const float gx = wrapAxis(x, worldWidth) / worldWidth * static_cast<float>(environment.nutrientGridWidth);
+    const float gy = wrapAxis(y, worldHeight) / worldHeight * static_cast<float>(environment.nutrientGridHeight);
     const int x0 = static_cast<int>(std::floor(gx));
     const int y0 = static_cast<int>(std::floor(gy));
     const int x1 = x0 + 1;
@@ -367,14 +395,14 @@ float sampleNutrientGridNormalized(
     const float tx = gx - std::floor(gx);
     const float ty = gy - std::floor(gy);
 
-    const float v00 = grid[nutrientIndex(x0, y0)];
-    const float v10 = grid[nutrientIndex(x1, y0)];
-    const float v01 = grid[nutrientIndex(x0, y1)];
-    const float v11 = grid[nutrientIndex(x1, y1)];
+    const float v00 = grid[nutrientIndex(x0, y0, environment)];
+    const float v10 = grid[nutrientIndex(x1, y0, environment)];
+    const float v01 = grid[nutrientIndex(x0, y1, environment)];
+    const float v11 = grid[nutrientIndex(x1, y1, environment)];
 
     const float top = std::lerp(v00, v10, tx);
     const float bottom = std::lerp(v01, v11, tx);
-    return clamp01(std::lerp(top, bottom, ty) / kNutrientCellCapacity);
+    return clamp01(std::lerp(top, bottom, ty) / environment.nutrientCellCapacity);
 }
 
 float harvestNutrientGrid(
@@ -383,14 +411,15 @@ float harvestNutrientGrid(
     float y,
     float amount,
     float worldWidth,
-    float worldHeight
+    float worldHeight,
+    const EnvironmentConfig& environment
 ) {
     if (grid.empty() || amount <= 0.0f) {
         return 0.0f;
     }
 
-    const float gx = wrapAxis(x, worldWidth) / worldWidth * static_cast<float>(kNutrientGridWidth);
-    const float gy = wrapAxis(y, worldHeight) / worldHeight * static_cast<float>(kNutrientGridHeight);
+    const float gx = wrapAxis(x, worldWidth) / worldWidth * static_cast<float>(environment.nutrientGridWidth);
+    const float gy = wrapAxis(y, worldHeight) / worldHeight * static_cast<float>(environment.nutrientGridHeight);
     const int x0 = static_cast<int>(std::floor(gx));
     const int y0 = static_cast<int>(std::floor(gy));
     const float tx = gx - std::floor(gx);
@@ -402,10 +431,10 @@ float harvestNutrientGrid(
     };
 
     std::array<WeightedCell, 4> cells {{
-        {nutrientIndex(x0, y0), (1.0f - tx) * (1.0f - ty)},
-        {nutrientIndex(x0 + 1, y0), tx * (1.0f - ty)},
-        {nutrientIndex(x0, y0 + 1), (1.0f - tx) * ty},
-        {nutrientIndex(x0 + 1, y0 + 1), tx * ty}
+        {nutrientIndex(x0, y0, environment), (1.0f - tx) * (1.0f - ty)},
+        {nutrientIndex(x0 + 1, y0, environment), tx * (1.0f - ty)},
+        {nutrientIndex(x0, y0 + 1, environment), (1.0f - tx) * ty},
+        {nutrientIndex(x0 + 1, y0 + 1, environment), tx * ty}
     }};
 
     std::sort(cells.begin(), cells.end(), [](const WeightedCell& lhs, const WeightedCell& rhs) {
@@ -445,24 +474,25 @@ void initializeNutrientGrid(
     float timeSeconds,
     const std::vector<Reef>& reefs,
     float worldWidth,
-    float worldHeight
+    float worldHeight,
+    const EnvironmentConfig& environment
 ) {
-    grid.assign(static_cast<std::size_t>(kNutrientGridWidth * kNutrientGridHeight), 0.0f);
-    const float cellWidth = worldWidth / static_cast<float>(kNutrientGridWidth);
-    const float cellHeight = worldHeight / static_cast<float>(kNutrientGridHeight);
+    grid.assign(static_cast<std::size_t>(environment.nutrientGridWidth * environment.nutrientGridHeight), 0.0f);
+    const float cellWidth = worldWidth / static_cast<float>(environment.nutrientGridWidth);
+    const float cellHeight = worldHeight / static_cast<float>(environment.nutrientGridHeight);
 
-    for (int y = 0; y < kNutrientGridHeight; ++y) {
-        for (int x = 0; x < kNutrientGridWidth; ++x) {
+    for (int y = 0; y < environment.nutrientGridHeight; ++y) {
+        for (int x = 0; x < environment.nutrientGridWidth; ++x) {
             const float worldX = (static_cast<float>(x) + 0.5f) * cellWidth;
             const float worldY = (static_cast<float>(y) + 0.5f) * cellHeight;
-            grid[nutrientIndex(x, y)] = sampleNutrientWithReefs(
+            grid[nutrientIndex(x, y, environment)] = sampleNutrientWithReefs(
                 worldX,
                 worldY,
                 timeSeconds,
                 reefs,
                 worldWidth,
                 worldHeight
-            ) * kNutrientCellCapacity;
+            ) * environment.nutrientCellCapacity;
         }
     }
 }
@@ -474,19 +504,20 @@ void updateNutrientGrid(
     const std::vector<Reef>& reefs,
     float worldWidth,
     float worldHeight,
-    float dt
+    float dt,
+    const EnvironmentConfig& environment
 ) {
     if (grid.empty()) {
-        initializeNutrientGrid(grid, timeSeconds, reefs, worldWidth, worldHeight);
+        initializeNutrientGrid(grid, timeSeconds, reefs, worldWidth, worldHeight, environment);
     }
     scratch.resize(grid.size());
 
-    const float cellWidth = worldWidth / static_cast<float>(kNutrientGridWidth);
-    const float cellHeight = worldHeight / static_cast<float>(kNutrientGridHeight);
+    const float cellWidth = worldWidth / static_cast<float>(environment.nutrientGridWidth);
+    const float cellHeight = worldHeight / static_cast<float>(environment.nutrientGridHeight);
 
-    for (int y = 0; y < kNutrientGridHeight; ++y) {
-        for (int x = 0; x < kNutrientGridWidth; ++x) {
-            const std::size_t index = nutrientIndex(x, y);
+    for (int y = 0; y < environment.nutrientGridHeight; ++y) {
+        for (int x = 0; x < environment.nutrientGridWidth; ++x) {
+            const std::size_t index = nutrientIndex(x, y, environment);
             const float worldX = (static_cast<float>(x) + 0.5f) * cellWidth;
             const float worldY = (static_cast<float>(y) + 0.5f) * cellHeight;
             const float target = sampleNutrientWithReefs(
@@ -496,17 +527,17 @@ void updateNutrientGrid(
                 reefs,
                 worldWidth,
                 worldHeight
-            ) * kNutrientCellCapacity;
+            ) * environment.nutrientCellCapacity;
             const float current = grid[index];
             const float neighborAverage = (
-                grid[nutrientIndex(x - 1, y)] +
-                grid[nutrientIndex(x + 1, y)] +
-                grid[nutrientIndex(x, y - 1)] +
-                grid[nutrientIndex(x, y + 1)]
+                grid[nutrientIndex(x - 1, y, environment)] +
+                grid[nutrientIndex(x + 1, y, environment)] +
+                grid[nutrientIndex(x, y - 1, environment)] +
+                grid[nutrientIndex(x, y + 1, environment)]
             ) * 0.25f;
-            const float recovery = std::max(0.0f, target - current) * kNutrientRecoveryRate * dt;
-            const float diffusion = (neighborAverage - current) * kNutrientDiffusionRate * dt;
-            scratch[index] = std::clamp(current + recovery + diffusion, 0.0f, kNutrientCellCapacity);
+            const float recovery = std::max(0.0f, target - current) * environment.nutrientRecoveryRate * dt;
+            const float diffusion = (neighborAverage - current) * environment.nutrientDiffusionRate * dt;
+            scratch[index] = std::clamp(current + recovery + diffusion, 0.0f, environment.nutrientCellCapacity);
         }
     }
 
@@ -517,20 +548,28 @@ Vec2 sampleBloomSpawnPosition(
     std::mt19937_64& rng,
     const std::vector<float>& nutrientGrid,
     float worldWidth,
-    float worldHeight
+    float worldHeight,
+    const EnvironmentConfig& environment
 ) {
     Vec2 best {
         randomFloat(rng, 0.0f, worldWidth),
         randomFloat(rng, 0.0f, worldHeight)
     };
-    float bestScore = sampleNutrientGridNormalized(nutrientGrid, best.x, best.y, worldWidth, worldHeight);
+    float bestScore = sampleNutrientGridNormalized(nutrientGrid, best.x, best.y, worldWidth, worldHeight, environment);
 
     for (int attempt = 0; attempt < 5; ++attempt) {
         const Vec2 candidate {
             randomFloat(rng, 0.0f, worldWidth),
             randomFloat(rng, 0.0f, worldHeight)
         };
-        const float score = sampleNutrientGridNormalized(nutrientGrid, candidate.x, candidate.y, worldWidth, worldHeight);
+        const float score = sampleNutrientGridNormalized(
+            nutrientGrid,
+            candidate.x,
+            candidate.y,
+            worldWidth,
+            worldHeight,
+            environment
+        );
         if (score > bestScore) {
             best = candidate;
             bestScore = score;
@@ -1213,6 +1252,7 @@ void mutateScalar(std::mt19937_64& rng, float volatility, float& value, float ex
 Genome mutateGenome(
     const Genome& parent,
     std::mt19937_64& rng,
+    const EvolutionConfig& evolution,
     std::vector<InnovationRecord>& innovations,
     std::uint32_t& nextInnovationId,
     std::uint32_t& nextHiddenNodeId
@@ -1242,7 +1282,8 @@ Genome mutateGenome(
     mutateScalar(rng, volatility, child.ecology.mutationVolatility, 0.4f);
     mutateScalar(rng, volatility, child.ecology.scavengerBias);
 
-    const float weightMutationChance = 0.035f + volatility * 0.075f;
+    const float weightMutationChance = evolution.weightMutationBaseChance
+        + volatility * evolution.weightMutationVolatilityScale;
     for (int index = 0; index < child.brain.connectionCount; ++index) {
         float& value = child.brain.connections[index].weight;
         if (randomFloat(rng, 0.0f, 1.0f) < weightMutationChance) {
@@ -1271,13 +1312,14 @@ Genome mutateGenome(
         }
     }
 
-    if (randomFloat(rng, 0.0f, 1.0f) < 0.05f + volatility * 0.09f) {
+    if (randomFloat(rng, 0.0f, 1.0f) < evolution.addConnectionBaseChance + volatility * evolution.addConnectionVolatilityScale) {
         addRandomConnection(child.brain, rng, volatility, innovations, nextInnovationId);
     }
-    if (randomFloat(rng, 0.0f, 1.0f) < 0.012f + volatility * 0.035f) {
+    if (randomFloat(rng, 0.0f, 1.0f) < evolution.addHiddenBaseChance + volatility * evolution.addHiddenVolatilityScale) {
         addRandomHidden(child.brain, rng, innovations, nextInnovationId, nextHiddenNodeId);
     }
-    if (child.brain.connectionCount > 10 && randomFloat(rng, 0.0f, 1.0f) < 0.016f + volatility * 0.035f) {
+    if (child.brain.connectionCount > 10
+        && randomFloat(rng, 0.0f, 1.0f) < evolution.removeConnectionBaseChance + volatility * evolution.removeConnectionVolatilityScale) {
         removeConnection(child.brain, randomInt(rng, 0, child.brain.connectionCount - 1));
     }
 
@@ -1669,17 +1711,23 @@ std::string toString(DietClass dietClass) {
     }
 }
 
-Simulation::Simulation() {
+Simulation::Simulation(const SimulationConfig& config)
+    : config_(sanitizeConfig(config)),
+      worldWidth_(config_.world.width),
+      worldHeight_(config_.world.height) {
     reset(1);
 }
 
 void Simulation::reset(std::uint64_t seed) {
     const std::uint64_t priorExtinctions = stats_.extinctions;
+    config_ = sanitizeConfig(config_);
+    worldWidth_ = config_.world.width;
+    worldHeight_ = config_.world.height;
     seed_ = seed == 0 ? 1 : seed;
     rng_.seed(seed_);
     nextCreatureId_ = 1;
     selectedCreatureId_ = 0;
-    autoSelectionEnabled_ = true;
+    autoSelectionEnabled_ = config_.debug.autoSelectOnReset;
     timeSeconds_ = 0.0f;
     historyAccumulator_ = 0.0f;
     stats_ = {};
@@ -1708,12 +1756,13 @@ void Simulation::reset(std::uint64_t seed) {
         .noveltyAtBranch = 0.0f,
         .lastSeenTime = 0.0f,
         .currentPopulation = 0,
-        .peakPopulation = kInitialPopulation,
+        .peakPopulation = config_.world.initialPopulation,
         .avgBrainComplexity = brainComplexityScore(ancestorGenome_.brain)
     });
 
     int reefAttempts = 0;
-    while (reefs_.size() < kTargetReefs && reefAttempts < static_cast<int>(kTargetReefs) * 24) {
+    while (reefs_.size() < config_.environment.targetReefs
+        && reefAttempts < static_cast<int>(config_.environment.targetReefs) * 24) {
         ++reefAttempts;
         Reef reef {};
         reef.position = {
@@ -1740,10 +1789,10 @@ void Simulation::reset(std::uint64_t seed) {
         }
     }
 
-    initializeNutrientGrid(nutrientGrid_, timeSeconds_, reefs_, worldWidth_, worldHeight_);
+    initializeNutrientGrid(nutrientGrid_, timeSeconds_, reefs_, worldWidth_, worldHeight_, config_.environment);
     nutrientScratch_.resize(nutrientGrid_.size());
 
-    for (std::size_t index = 0; index < kInitialPopulation; ++index) {
+    for (std::size_t index = 0; index < config_.world.initialPopulation; ++index) {
         const Vec2 position {
             randomFloat(rng_, 0.0f, worldWidth_),
             randomFloat(rng_, 0.0f, worldHeight_)
@@ -1768,9 +1817,9 @@ void Simulation::reset(std::uint64_t seed) {
         lineages_.front().peakPopulation = creatures_.size();
     }
 
-    for (std::size_t index = 0; index < kTargetBlooms; ++index) {
+    for (std::size_t index = 0; index < config_.environment.targetBlooms; ++index) {
         Bloom bloom {};
-        bloom.position = sampleBloomSpawnPosition(rng_, nutrientGrid_, worldWidth_, worldHeight_);
+        bloom.position = sampleBloomSpawnPosition(rng_, nutrientGrid_, worldWidth_, worldHeight_, config_.environment);
         bloom.maxEnergy = randomFloat(rng_, 78.0f, 130.0f);
         bloom.energy = bloom.maxEnergy * randomFloat(rng_, 0.55f, 1.0f);
         bloom.regrowthRate = randomFloat(rng_, 5.0f, 14.0f);
@@ -1957,8 +2006,12 @@ float Simulation::timeSeconds() const {
     return timeSeconds_;
 }
 
+const SimulationConfig& Simulation::config() const {
+    return config_;
+}
+
 float Simulation::sampleNutrient(float x, float y) const {
-    return sampleNutrientGridNormalized(nutrientGrid_, x, y, worldWidth_, worldHeight_);
+    return sampleNutrientGridNormalized(nutrientGrid_, x, y, worldWidth_, worldHeight_, config_.environment);
 }
 
 Vec2 Simulation::sampleCurrent(float x, float y) const {
@@ -1977,7 +2030,14 @@ EnvironmentProbe Simulation::probeEnvironment(float x, float y) const {
     const float wrappedY = wrapAxis(y, worldHeight_);
     const HabitatSample habitat = sampleHabitatField(wrappedX, wrappedY, timeSeconds_, reefs_, worldWidth_, worldHeight_);
     return EnvironmentProbe {
-        .nutrient = sampleNutrientGridNormalized(nutrientGrid_, wrappedX, wrappedY, worldWidth_, worldHeight_),
+        .nutrient = sampleNutrientGridNormalized(
+            nutrientGrid_,
+            wrappedX,
+            wrappedY,
+            worldWidth_,
+            worldHeight_,
+            config_.environment
+        ),
         .current = sampleCurrentWithReefs(wrappedX, wrappedY, timeSeconds_, reefs_, worldWidth_, worldHeight_),
         .substrate = std::max(habitat.proximity, habitat.contact),
         .shelter = habitat.shelter,
@@ -2070,6 +2130,7 @@ WorldSnapshot Simulation::worldSnapshot(std::size_t topLineageCount) const {
         .timeSeconds = timeSeconds_,
         .worldWidth = worldWidth_,
         .worldHeight = worldHeight_,
+        .config = config_,
         .population = stats_.population,
         .blooms = stats_.blooms,
         .carrion = stats_.carrion,
@@ -2101,6 +2162,7 @@ bool Simulation::saveToFile(const std::string& path) const {
     stream.write(kSaveMagic, sizeof(kSaveMagic) - 1);
     return static_cast<bool>(stream)
         && writePod(stream, kSaveVersion)
+        && writePod(stream, config_)
         && writePod(stream, worldWidth_)
         && writePod(stream, worldHeight_)
         && writePod(stream, timeSeconds_)
@@ -2129,6 +2191,7 @@ bool Simulation::saveToFile(const std::string& path) const {
 
 bool Simulation::loadFromFile(const std::string& path) {
     struct LoadedState {
+        SimulationConfig config {};
         float worldWidth = 0.0f;
         float worldHeight = 0.0f;
         float timeSeconds = 0.0f;
@@ -2169,6 +2232,7 @@ bool Simulation::loadFromFile(const std::string& path) {
     std::uint32_t version = 0;
     LoadedState loaded {};
     if (!readPod(stream, version) || version != kSaveVersion
+        || !readPod(stream, loaded.config)
         || !readPod(stream, loaded.worldWidth)
         || !readPod(stream, loaded.worldHeight)
         || !readPod(stream, loaded.timeSeconds)
@@ -2203,6 +2267,9 @@ bool Simulation::loadFromFile(const std::string& path) {
         return false;
     }
 
+    config_ = sanitizeConfig(loaded.config);
+    config_.world.width = loaded.worldWidth;
+    config_.world.height = loaded.worldHeight;
     worldWidth_ = loaded.worldWidth;
     worldHeight_ = loaded.worldHeight;
     timeSeconds_ = loaded.timeSeconds;
@@ -2349,7 +2416,16 @@ void Simulation::step(float dt) {
 
     timeSeconds_ += dt;
     stats_.season = seasonFactor(timeSeconds_);
-    updateNutrientGrid(nutrientGrid_, nutrientScratch_, timeSeconds_, reefs_, worldWidth_, worldHeight_, dt);
+    updateNutrientGrid(
+        nutrientGrid_,
+        nutrientScratch_,
+        timeSeconds_,
+        reefs_,
+        worldWidth_,
+        worldHeight_,
+        dt,
+        config_.environment
+    );
 
     for (Bloom& bloom : blooms_) {
         const float nutrient = sampleNutrient(bloom.position.x, bloom.position.y);
@@ -2360,7 +2436,8 @@ void Simulation::step(float dt) {
             bloom.position.y,
             bloomDraw,
             worldWidth_,
-            worldHeight_
+            worldHeight_,
+            config_.environment
         );
         bloom.energy = std::min(bloom.maxEnergy, bloom.energy + harvested);
     }
@@ -2372,25 +2449,25 @@ void Simulation::step(float dt) {
         return carrion.energy <= 1.0f;
     }), carrion_.end());
 
-    while (blooms_.size() < kTargetBlooms) {
+    while (blooms_.size() < config_.environment.targetBlooms) {
         Bloom bloom {};
-        bloom.position = sampleBloomSpawnPosition(rng_, nutrientGrid_, worldWidth_, worldHeight_);
+        bloom.position = sampleBloomSpawnPosition(rng_, nutrientGrid_, worldWidth_, worldHeight_, config_.environment);
         bloom.maxEnergy = randomFloat(rng_, 78.0f, 130.0f);
         bloom.energy = bloom.maxEnergy * randomFloat(rng_, 0.55f, 1.0f);
         bloom.regrowthRate = randomFloat(rng_, 5.0f, 14.0f);
         blooms_.push_back(bloom);
     }
 
-    if (randomFloat(rng_, 0.0f, 1.0f) < kBloomRespawnChance * dt) {
+    if (randomFloat(rng_, 0.0f, 1.0f) < config_.environment.bloomRespawnChance * dt) {
         Bloom bloom {};
-        bloom.position = sampleBloomSpawnPosition(rng_, nutrientGrid_, worldWidth_, worldHeight_);
+        bloom.position = sampleBloomSpawnPosition(rng_, nutrientGrid_, worldWidth_, worldHeight_, config_.environment);
         bloom.maxEnergy = randomFloat(rng_, 78.0f, 130.0f);
         bloom.energy = bloom.maxEnergy * randomFloat(rng_, 0.35f, 1.0f);
         bloom.regrowthRate = randomFloat(rng_, 5.0f, 14.0f);
         blooms_.push_back(bloom);
     }
 
-    SpatialHash hash(worldWidth_, worldHeight_, kSpatialCellSize);
+    SpatialHash hash(worldWidth_, worldHeight_, config_.environment.spatialCellSize);
     std::vector<int> nearby;
     hash.clear();
     for (std::size_t index = 0; index < creatures_.size(); ++index) {
@@ -2750,7 +2827,8 @@ void Simulation::step(float dt) {
                 mouth.y,
                 grazeDrive * dt * (0.7f + creature.genome.ecology.plantAffinity * 1.55f) * substrateAccess,
                 worldWidth_,
-                worldHeight_
+                worldHeight_,
+                config_.environment
             );
             const float ambientGain = ambientHarvest * (0.95f + creature.genome.ecology.plantAffinity * 0.45f);
             creature.energy += ambientGain;
@@ -2895,10 +2973,11 @@ void Simulation::step(float dt) {
         if (reproductionIntent > 0.4f
             && creature.energy > creature.traits.reproductionThreshold * 0.92f
             && creature.age > 18.0f
-            && creatures_.size() + pendingSpawns.size() < kMaxPopulation) {
+            && creatures_.size() + pendingSpawns.size() < config_.world.maxPopulation) {
             const Genome childGenome = mutateGenome(
                 creature.genome,
                 rng_,
+                config_.evolution,
                 innovations_,
                 nextInnovationId_,
                 nextHiddenNodeId_
@@ -2908,9 +2987,13 @@ void Simulation::step(float dt) {
             std::uint8_t childLineageDepth = creature.lineageDepth;
             const int structuralDelta = std::abs(childGenome.brain.hiddenCount - creature.genome.brain.hiddenCount)
                 + std::abs(childGenome.brain.connectionCount - creature.genome.brain.connectionCount);
-            const bool branchLineage = (childGenome.brain.hiddenCount > creature.genome.brain.hiddenCount && brainDistance.topologyNovelty > 0.12f)
-                || (structuralDelta >= 3 && brainDistance.compatibility > 0.3f)
-                || brainDistance.compatibility > 0.52f;
+            const bool branchLineage = (
+                childGenome.brain.hiddenCount > creature.genome.brain.hiddenCount
+                && brainDistance.topologyNovelty > config_.evolution.lineageBranchHiddenNoveltyThreshold
+            ) || (
+                structuralDelta >= config_.evolution.lineageBranchStructuralDelta
+                && brainDistance.compatibility > config_.evolution.lineageBranchStructuralCompatibilityThreshold
+            ) || brainDistance.compatibility > config_.evolution.lineageBranchCompatibilityThreshold;
             if (branchLineage) {
                 childLineageId = nextLineageId_++;
                 childLineageDepth = static_cast<std::uint8_t>(std::min<int>(255, creature.lineageDepth + 1));

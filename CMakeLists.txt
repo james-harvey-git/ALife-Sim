@@ -53,4 +53,11 @@ if(BUILD_TESTING)
             -DSTATE_PATH=${CMAKE_BINARY_DIR}/phase0-roundtrip.bin
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/phase0_roundtrip.cmake
     )
+
+    add_test(
+        NAME alife_determinism_configured
+        COMMAND ${CMAKE_COMMAND}
+            -DALIFE_SIM_EXECUTABLE=$<TARGET_FILE:alife_sim>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/phase0_determinism.cmake
+    )
 endif()
