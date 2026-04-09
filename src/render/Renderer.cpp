@@ -301,7 +301,7 @@ GLuint linkProgram(const char* vertexSource, const char* fragmentSource) {
 
 bool initializeBackend(RendererState* renderer) {
     constexpr const char* kColorVertexShader = R"glsl(
-        #version 150
+        #version 410
         in vec2 aPosition;
         in vec4 aColor;
         uniform vec2 uViewport;
@@ -318,7 +318,7 @@ bool initializeBackend(RendererState* renderer) {
     )glsl";
 
     constexpr const char* kColorFragmentShader = R"glsl(
-        #version 150
+        #version 410
         in vec4 vColor;
         out vec4 fragColor;
 
@@ -328,7 +328,7 @@ bool initializeBackend(RendererState* renderer) {
     )glsl";
 
     constexpr const char* kTextVertexShader = R"glsl(
-        #version 150
+        #version 410
         in vec2 aPosition;
         in vec2 aTexCoord;
         in vec4 aColor;
@@ -348,7 +348,7 @@ bool initializeBackend(RendererState* renderer) {
     )glsl";
 
     constexpr const char* kTextFragmentShader = R"glsl(
-        #version 150
+        #version 410
         uniform sampler2D uTexture;
         in vec2 vTexCoord;
         in vec4 vColor;
@@ -796,8 +796,8 @@ bool Renderer::initialize() {
     }
 
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_ACCELERATED_VISUAL, 1);
 #if defined(__APPLE__)
@@ -837,10 +837,13 @@ bool Renderer::initialize() {
         smallFont_ = TTF_OpenFont(fontPath->c_str(), 13);
     }
 
+    creatureSdf_.initialize(ALIFE_SHADER_DIR);
+
     return true;
 }
 
 void Renderer::shutdown() {
+    creatureSdf_.shutdown();
     if (titleFont_ != nullptr) {
         TTF_CloseFont(titleFont_);
         titleFont_ = nullptr;

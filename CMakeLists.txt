@@ -24,9 +24,11 @@ add_executable(alife_sim
     src/main.cpp
     src/sim/Simulation.cpp
     src/render/Renderer.cpp
+    src/render/CreatureSDF.cpp
 )
 
 target_include_directories(alife_sim PRIVATE src)
+target_compile_definitions(alife_sim PRIVATE ALIFE_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders")
 target_link_libraries(alife_sim PRIVATE
     OpenGL::GL
     PkgConfig::SDL2

@@ -5,6 +5,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 
+#include "render/CreatureSDF.hpp"
 #include "sim/Simulation.hpp"
 
 namespace alife {
@@ -84,6 +85,7 @@ private:
     int dragStartScreenX_ = 0;
     int dragStartScreenY_ = 0;
     Vec2 dragStartCamera_ {0.0f, 0.0f};
+    CreatureSDF creatureSdf_;
 
     void updateViewport(const Simulation& simulation);
     void updateCamera(const Simulation& simulation);
