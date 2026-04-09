@@ -55,6 +55,7 @@ The long-term goal is not a scripted predator/prey toy. The goal is a watchable,
 - Grazers and blooms now compete over the same nutrient substrate, and reproduction is modulated by recent foraging success instead of only stored energy.
 - Branching lineage tracking for major brain-topology divergences so structural novelty can be observed as clades instead of anonymous drift.
 - Native inspection HUD with history graphs, ecology drift, lineage telemetry, a live brain-topology overlay, a scrollable selection inspector, and selection readouts including slip/curvature-style body metrics.
+- Creature rendering now uses a more cohesive procedural phenotype pass: body-ribbon skinning over the real segment chain, softer internal shading, clearer mouths/eyes, and appendages tied to real tail/fin traits and controller outputs.
 - The app now boots with a subject selected, and the HUD exposes explicit observer picks (`random subject`, `top energy`, `dominant lineage`, `newest branch`) to support QA and watchability.
 - The world view now uses original-sim-style manual camera controls: empty-space drag pan, `WASD` / arrow-key panning, cursor-anchored zoom, and explicit subject tracking instead of always-on follow.
 - Tracking should be opt-in and predictable. Manual pan must immediately win over tracking instead of the camera fighting the user.

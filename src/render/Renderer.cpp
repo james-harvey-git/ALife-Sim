@@ -207,6 +207,18 @@ SDL_Color tint(SDL_Color color, float brightnessScale, std::uint8_t alpha = 255)
     return {scale(color.r), scale(color.g), scale(color.b), alpha};
 }
 
+SDL_Color mixColor(SDL_Color a, SDL_Color b, float t, std::uint8_t alpha = 255) {
+    const auto blend = [t](std::uint8_t lhs, std::uint8_t rhs) {
+        return static_cast<std::uint8_t>(std::clamp(lhs + (rhs - lhs) * t, 0.0f, 255.0f));
+    };
+    return {
+        blend(a.r, b.r),
+        blend(a.g, b.g),
+        blend(a.b, b.b),
+        alpha
+    };
+}
+
 bool pointInRect(int x, int y, const SDL_FRect& rect) {
     const float px = static_cast<float>(x);
     const float py = static_cast<float>(y);
@@ -1314,15 +1326,29 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
             const float durability = std::max(creature.traits.segmentDurability[segmentIndex], 1.0f);
             return clamp01(1.0f - creature.segmentDamage[segmentIndex] / durability);
         };
+        const float diet = clamp01(
+            creature.genome.ecology.meatAffinity
+                / std::max(0.18f, creature.genome.ecology.plantAffinity + creature.genome.ecology.meatAffinity)
+        );
+        const float energyLevel = clamp01(creature.energy / std::max(56.0f, creature.traits.reproductionThreshold));
+        const float aggression = clamp01(creature.genome.ecology.aggression * 0.68f + diet * 0.32f);
         const SDL_Color body = hsv(
             creature.genome.morphology.hue,
-            lerp(0.42f, 0.82f, creature.genome.morphology.armor),
-            lerp(0.7f, 0.96f, creature.genome.ecology.plantAffinity)
+            lerp(0.46f, 0.78f, creature.genome.morphology.armor * 0.72f + aggression * 0.28f),
+            lerp(0.56f, 0.76f, creature.genome.ecology.plantAffinity * 0.55f + energyLevel * 0.45f)
         );
-        const SDL_Color accent = hsv(creature.genome.morphology.hue + 0.07f, 0.34f, 0.9f, 176);
-        const SDL_Color shell = tint(body, 0.78f, 244);
-        const SDL_Color shadow = tint(body, 0.34f, 138);
-        const SDL_Color eye = hsv(0.14f, 0.18f, 0.98f);
+        const SDL_Color rim = tint(body, 0.62f, 244);
+        const SDL_Color innerGlow = mixColor(body, hsv(creature.genome.morphology.hue + 0.02f, 0.24f, 0.98f), 0.6f, 200);
+        const SDL_Color energyGlowColor = mixColor(
+            hsv(creature.genome.morphology.hue + 0.02f, 0.18f, 0.98f),
+            SDL_Color {255, 229, 170, 255},
+            0.42f + energyLevel * 0.28f,
+            static_cast<std::uint8_t>(68 + energyLevel * 72.0f)
+        );
+        const SDL_Color appendageColor = mixColor(body, innerGlow, 0.38f, 186);
+        const SDL_Color shadow = mixColor(rim, SDL_Color {10, 13, 18, 255}, 0.72f, 140);
+        const SDL_Color lipColor = mixColor(innerGlow, rim, diet * 0.48f, 218);
+        const SDL_Color eyeWhite = {244, 246, 248, 252};
 
         const SDL_FPoint head = worldToScreen(creature.bodyPoints[0], simulation);
         const auto wrappedPointToScreen = [&](const Vec2& point) {
@@ -1349,6 +1375,9 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         for (int segmentIndex = 0; segmentIndex < kBodySegments; ++segmentIndex) {
             screenPoints[segmentIndex] = wrappedPointToScreen(creature.bodyPoints[segmentIndex]);
         }
+        const auto pointPlus = [](const SDL_FPoint& point, const Vec2& delta) {
+            return SDL_FPoint {point.x + delta.x, point.y + delta.y};
+        };
         const auto nosewardAxisAt = [&](int segmentIndex) {
             Vec2 axis {};
             if (segmentIndex <= 0) {
@@ -1372,56 +1401,59 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
             }
             return normalize(axis);
         };
+        struct BodyFrame {
+            SDL_FPoint center {};
+            Vec2 axis {};
+            Vec2 side {};
+            float radius = 0.0f;
+            float integrity = 1.0f;
+        };
+        std::array<BodyFrame, kBodySegments> frames {};
+        for (int segmentIndex = 0; segmentIndex < kBodySegments; ++segmentIndex) {
+            const Vec2 axis = nosewardAxisAt(segmentIndex);
+            const float segmentT = static_cast<float>(segmentIndex) / static_cast<float>(std::max(1, kBodySegments - 1));
+            frames[segmentIndex] = {
+                .center = screenPoints[segmentIndex],
+                .axis = axis,
+                .side = Vec2 {-axis.y, axis.x},
+                .radius = creature.bodyRadii[segmentIndex] * worldScale * (segmentIndex == 0 ? 1.02f : lerp(0.98f, 0.82f, segmentT)),
+                .integrity = segmentIntegrity(segmentIndex)
+            };
+        }
+
         const SDL_FPoint trailEnd {
             head.x - creature.velocity.x * worldScale * 0.05f,
             head.y - creature.velocity.y * worldScale * 0.05f
         };
-        drawLine(renderer_, head, trailEnd, {73, 86, 107, 90});
+        drawLine(renderer_, head, trailEnd, mixColor(shadow, SDL_Color {97, 120, 146, 255}, 0.38f, 74));
 
         if (creature.signal > 0.08f) {
             const float aura = (creature.traits.signalRange * worldScale) * 0.12f;
-            fillEllipse(renderer_, head.x, head.y, aura, aura * 0.84f, {88, 180, 214, static_cast<std::uint8_t>(18 + creature.signal * 28.0f)});
+            fillEllipse(renderer_, head.x, head.y, aura, aura * 0.86f, mixColor(energyGlowColor, SDL_Color {94, 186, 220, 255}, 0.44f, static_cast<std::uint8_t>(20 + creature.signal * 34.0f)));
         }
 
-        for (int segmentIndex = 1; segmentIndex < kBodySegments; ++segmentIndex) {
-            const SDL_FPoint start = screenPoints[segmentIndex - 1];
-            const SDL_FPoint end = screenPoints[segmentIndex];
-            const float strain = clamp01(creature.jointStrain[segmentIndex]);
-            const SDL_Color jointColor = strain > 0.54f
-                ? SDL_Color {228, static_cast<std::uint8_t>(128 + strain * 48.0f), 108, static_cast<std::uint8_t>(selected ? 182 : 118)}
-                : SDL_Color {static_cast<std::uint8_t>(92 + strain * 78.0f), static_cast<std::uint8_t>(130 + strain * 46.0f), static_cast<std::uint8_t>(168 + strain * 38.0f), static_cast<std::uint8_t>(selected ? 154 : 82)};
-            drawLine(renderer_, start, end, jointColor);
-        }
-
-        const Vec2 headAxis = nosewardAxisAt(0);
-        const Vec2 headSide {-headAxis.y, headAxis.x};
+        const Vec2 headAxis = frames[0].axis;
+        const Vec2 headSide = frames[0].side;
         const Vec2 forwardVector = headAxis;
         const Vec2 sideVector = headSide;
-        const float headRadius = creature.bodyRadii[0] * worldScale;
+        const float headRadius = frames[0].radius;
         const float thrustDrive = clamp01(std::max(0.0f, creature.outputs[1]));
         const float biteDrive = clamp01(std::max(0.0f, creature.outputs[3]));
-        const float diet = clamp01(
-            creature.genome.ecology.meatAffinity
-                / std::max(0.18f, creature.genome.ecology.plantAffinity + creature.genome.ecology.meatAffinity)
-        );
         const float finExpressiveness = clamp01((creature.genome.morphology.finArea - 0.1f) / 0.9f);
         const float sensorExpressiveness = clamp01((creature.traits.sensorRange - 90.0f) / 170.0f);
         const float animationTime = simulation.timeSeconds();
-        const auto pointPlus = [](const SDL_FPoint& point, const Vec2& delta) {
-            return SDL_FPoint {point.x + delta.x, point.y + delta.y};
-        };
 
         const SDL_FPoint tailBase = screenPoints[kBodySegments - 1];
         const Vec2 tailOut = nosewardAxisAt(kBodySegments - 1) * -1.0f;
         const Vec2 tailSide {-tailOut.y, tailOut.x};
-        const float tailBaseRadius = creature.bodyRadii[kBodySegments - 1] * worldScale;
+        const float tailBaseRadius = frames[kBodySegments - 1].radius;
         const int filamentCount = std::clamp(
             1 + static_cast<int>(std::round(creature.traits.tailFork * 1.6f + creature.genome.morphology.tailFlex * 1.2f)),
             1,
-            3
+            4
         );
         const float filamentLength = creature.traits.segmentSpacing * worldScale * (1.05f + creature.traits.tailLengthScale * 0.9f);
-        const SDL_Color filamentColor = tint(accent, 0.82f, 196);
+        const SDL_Color filamentColor = mixColor(appendageColor, energyGlowColor, 0.18f + thrustDrive * 0.2f, 194);
         for (int filamentIndex = 0; filamentIndex < filamentCount; ++filamentIndex) {
             const float spread = filamentCount == 1
                 ? 0.0f
@@ -1437,8 +1469,8 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
             const Vec2 tipDir = rotate(tailOut, swing * 1.45f + spread * 0.22f);
             const SDL_FPoint mid = pointPlus(root, midDir * (filamentLength * 0.44f));
             const SDL_FPoint tip = pointPlus(mid, tipDir * (filamentLength * 0.62f));
-            fillTaperedCapsule(renderer_, root, mid, tailBaseRadius * 0.16f, tailBaseRadius * 0.08f, filamentColor);
-            fillTaperedCapsule(renderer_, mid, tip, tailBaseRadius * 0.08f, std::max(0.8f, tailBaseRadius * 0.026f), filamentColor);
+            fillTaperedCapsule(renderer_, root, mid, tailBaseRadius * 0.24f, tailBaseRadius * 0.1f, mixColor(filamentColor, shadow, 0.28f, 164));
+            fillTaperedCapsule(renderer_, mid, tip, tailBaseRadius * 0.1f, std::max(0.9f, tailBaseRadius * 0.03f), filamentColor);
         }
 
         const int finLeadSegment = std::clamp(
@@ -1465,44 +1497,66 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
                     * (0.25f + thrustDrive * 0.75f);
                 const Vec2 finDirection = rotate(finSide * sideSign - finAxis * 0.24f, flap);
                 const SDL_FPoint finTip = pointPlus(anchor, finDirection * finLength);
-                fillTaperedCapsule(renderer_, anchor, finTip, finBaseRadius, std::max(0.9f, finBaseRadius * 0.22f), tint(accent, 0.8f, 132));
+                fillTaperedCapsule(renderer_, anchor, finTip, finBaseRadius * 1.12f, std::max(0.9f, finBaseRadius * 0.26f), mixColor(appendageColor, innerGlow, 0.22f, 128));
                 const SDL_FPoint finBack = pointPlus(anchor, finAxis * (-finBaseRadius * 1.2f));
-                fillTriangle(renderer_, finBack, finTip, pointPlus(anchor, finAxis * (finBaseRadius * 0.72f)), tint(accent, 0.62f, 96));
+                fillTriangle(renderer_, finBack, finTip, pointPlus(anchor, finAxis * (finBaseRadius * 0.72f)), mixColor(appendageColor, shadow, 0.38f, 94));
             }
         }
 
-        for (int segmentIndex = kBodySegments - 1; segmentIndex >= 1; --segmentIndex) {
-            const SDL_FPoint start = screenPoints[segmentIndex - 1];
-            const SDL_FPoint end = screenPoints[segmentIndex];
-            const float startRadius = creature.bodyRadii[segmentIndex - 1] * worldScale
-                * (segmentIndex == 1 ? 0.9f : 0.8f);
-            const float endRadius = creature.bodyRadii[segmentIndex] * worldScale * 0.74f;
-            const float shade = lerp(0.74f, 1.0f, 1.0f - static_cast<float>(segmentIndex - 1) / static_cast<float>(kBodySegments - 1));
-            fillTaperedCapsule(renderer_, start, end, startRadius, endRadius, tint(body, shade, 226));
+        auto drawBodyRibbon = [&](float radiusScale, const Vec2& offset, SDL_Color color, float squash = 0.92f) {
+            std::array<SDL_FPoint, kBodySegments> leftPoints {};
+            std::array<SDL_FPoint, kBodySegments> rightPoints {};
+            std::array<SDL_FPoint, kBodySegments> centers {};
+            std::array<float, kBodySegments> radii {};
+            for (int segmentIndex = 0; segmentIndex < kBodySegments; ++segmentIndex) {
+                centers[segmentIndex] = pointPlus(frames[segmentIndex].center, offset);
+                radii[segmentIndex] = frames[segmentIndex].radius * radiusScale * lerp(0.86f, 1.0f, frames[segmentIndex].integrity);
+                leftPoints[segmentIndex] = pointPlus(centers[segmentIndex], frames[segmentIndex].side * radii[segmentIndex]);
+                rightPoints[segmentIndex] = pointPlus(centers[segmentIndex], frames[segmentIndex].side * -radii[segmentIndex]);
+            }
+            for (int segmentIndex = 0; segmentIndex < kBodySegments - 1; ++segmentIndex) {
+                fillPolygon(
+                    renderer_,
+                    {
+                        leftPoints[segmentIndex],
+                        leftPoints[segmentIndex + 1],
+                        rightPoints[segmentIndex + 1],
+                        rightPoints[segmentIndex]
+                    },
+                    color
+                );
+            }
+            for (int segmentIndex = kBodySegments - 1; segmentIndex >= 0; --segmentIndex) {
+                const float radius = radii[segmentIndex];
+                fillEllipse(renderer_, centers[segmentIndex].x, centers[segmentIndex].y, radius, radius * squash, color);
+            }
+        };
+
+        const Vec2 dorsalOffset = headAxis * (headRadius * 0.05f) - headSide * (headRadius * 0.17f);
+        const Vec2 bellyOffset = headAxis * (-headRadius * 0.04f) + headSide * (headRadius * 0.14f);
+        drawBodyRibbon(1.16f, bellyOffset, mixColor(shadow, SDL_Color {33, 40, 50, 255}, 0.22f, 92), 0.98f);
+        drawBodyRibbon(1.04f, Vec2 {}, rim, 0.96f);
+        drawBodyRibbon(0.94f, Vec2 {}, tint(body, 1.02f, 236), 0.94f);
+        drawBodyRibbon(0.66f, dorsalOffset, innerGlow, 0.86f);
+        drawBodyRibbon(0.42f, dorsalOffset + headAxis * (headRadius * 0.03f), energyGlowColor, 0.8f);
+        drawBodyRibbon(0.46f, bellyOffset * 0.52f, mixColor(shadow, rim, 0.1f, 54), 0.84f);
+
+        if (selected) {
+            for (int segmentIndex = 1; segmentIndex < kBodySegments; ++segmentIndex) {
+                const SDL_FPoint start = screenPoints[segmentIndex - 1];
+                const SDL_FPoint end = screenPoints[segmentIndex];
+                const float strain = clamp01(creature.jointStrain[segmentIndex]);
+                const SDL_Color jointColor = strain > 0.54f
+                    ? SDL_Color {228, static_cast<std::uint8_t>(128 + strain * 48.0f), 108, 148}
+                    : SDL_Color {static_cast<std::uint8_t>(86 + strain * 64.0f), static_cast<std::uint8_t>(126 + strain * 40.0f), static_cast<std::uint8_t>(160 + strain * 28.0f), 90};
+                drawLine(renderer_, start, end, jointColor);
+            }
         }
 
-        for (int segmentIndex = kBodySegments - 1; segmentIndex >= 0; --segmentIndex) {
-            const SDL_FPoint point = screenPoints[segmentIndex];
-            const float radius = creature.bodyRadii[segmentIndex] * worldScale;
-            const float integrity = segmentIntegrity(segmentIndex);
-            const float fullness = segmentIndex == 0 ? 0.96f : lerp(0.66f, 0.88f, 1.0f - static_cast<float>(segmentIndex) / static_cast<float>(kBodySegments - 1));
-            fillEllipse(renderer_, point.x, point.y, radius * fullness, radius * fullness * 0.86f, tint(body, lerp(0.82f, 1.04f, integrity), 232));
-            fillEllipse(renderer_, point.x - sideVector.x * radius * 0.08f, point.y - sideVector.y * radius * 0.08f, radius * 0.44f, radius * 0.26f, tint(body, 0.58f, 124));
-            const Vec2 axis = nosewardAxisAt(segmentIndex);
-            fillEllipse(
-                renderer_,
-                point.x - axis.x * radius * 0.18f - headSide.x * radius * 0.05f,
-                point.y - axis.y * radius * 0.18f - headSide.y * radius * 0.05f,
-                radius * 0.3f,
-                radius * 0.14f,
-                shadow
-            );
-        }
-
-        const SDL_FPoint noseTip {head.x + headAxis.x * headRadius * 0.96f, head.y + headAxis.y * headRadius * 0.96f};
-        const SDL_FPoint noseTop {head.x + headSide.x * headRadius * 0.42f - headAxis.x * headRadius * 0.12f, head.y + headSide.y * headRadius * 0.42f - headAxis.y * headRadius * 0.12f};
-        const SDL_FPoint noseBottom {head.x - headSide.x * headRadius * 0.42f - headAxis.x * headRadius * 0.12f, head.y - headSide.y * headRadius * 0.42f - headAxis.y * headRadius * 0.12f};
-        fillTriangle(renderer_, noseTop, noseTip, noseBottom, tint(body, 1.08f, 238));
+        const SDL_FPoint noseTip {head.x + headAxis.x * headRadius * (0.82f + creature.genome.morphology.jawLength * 0.26f), head.y + headAxis.y * headRadius * (0.82f + creature.genome.morphology.jawLength * 0.26f)};
+        const SDL_FPoint noseTop {head.x + headSide.x * headRadius * 0.38f + headAxis.x * headRadius * 0.12f, head.y + headSide.y * headRadius * 0.38f + headAxis.y * headRadius * 0.12f};
+        const SDL_FPoint noseBottom {head.x - headSide.x * headRadius * 0.38f + headAxis.x * headRadius * 0.12f, head.y - headSide.y * headRadius * 0.38f + headAxis.y * headRadius * 0.12f};
+        fillTriangle(renderer_, noseTop, noseTip, noseBottom, mixColor(innerGlow, energyGlowColor, 0.24f, 228));
 
         const int whiskerCount = 1 + static_cast<int>(sensorExpressiveness > 0.38f);
         const float whiskerLength = headRadius * (0.32f + sensorExpressiveness * 0.64f);
@@ -1516,16 +1570,16 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
                 * (0.08f + creature.signal * 0.14f + sensorExpressiveness * 0.08f);
             const Vec2 whiskerDir = rotate(headAxis * -1.0f + headSide * sideSign * 0.12f, wiggle);
             const SDL_FPoint tip = pointPlus(root, whiskerDir * whiskerLength);
-            fillTaperedCapsule(renderer_, root, tip, 1.5f, 0.55f, tint(accent, 0.82f, 148));
+            fillTaperedCapsule(renderer_, root, tip, 1.5f, 0.55f, mixColor(appendageColor, energyGlowColor, 0.2f, 148));
         }
 
         if (creature.genome.morphology.spikes > 0.28f) {
-            const SDL_Color spineColor = tint(shell, 0.92f, 168);
+            const SDL_Color spineColor = mixColor(rim, innerGlow, 0.2f, 162);
             for (int segmentIndex = 1; segmentIndex < kBodySegments - 1; ++segmentIndex) {
                 const SDL_FPoint center = screenPoints[segmentIndex];
                 const Vec2 axis = nosewardAxisAt(segmentIndex);
                 const Vec2 localSide {-axis.y, axis.x};
-                const float radius = creature.bodyRadii[segmentIndex] * worldScale;
+                const float radius = frames[segmentIndex].radius;
                 const float spikeExtent = radius * (0.05f + creature.genome.morphology.spikes * 0.18f);
                 const SDL_FPoint rootA {center.x - axis.x * radius * 0.1f, center.y - axis.y * radius * 0.1f};
                 const SDL_FPoint rootB {center.x + axis.x * radius * 0.1f, center.y + axis.y * radius * 0.1f};
@@ -1534,60 +1588,111 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
             }
         }
 
-        const float slotWidth = headRadius * lerp(0.42f, 0.24f, diet) * (0.68f + creature.genome.morphology.jawArc * 0.38f);
-        const float slotHeight = headRadius * lerp(0.12f, 0.06f, diet) * (0.6f + creature.traits.jawOffset * 0.55f) * (1.0f + biteDrive * lerp(1.2f, 2.8f, diet));
-        const SDL_FPoint mouthCenter = pointPlus(head, headAxis * (headRadius * 0.5f));
+        const float slotWidth = headRadius * lerp(0.36f, 0.2f, diet) * (0.62f + creature.genome.morphology.jawArc * 0.52f);
+        const float slotHeight = headRadius * lerp(0.11f, 0.05f, diet) * (0.48f + creature.traits.jawOffset * 0.78f);
+        const float biteGape = slotHeight * (1.0f + biteDrive * lerp(1.4f, 4.2f, diet));
+        const SDL_FPoint mouthCenter = pointPlus(head, headAxis * (headRadius * (0.54f + creature.traits.jawOffset * 0.16f)));
+        const SDL_Color mouthCavity = mixColor(
+            hsv(creature.genome.morphology.hue + 0.92f, 0.42f, 0.32f),
+            SDL_Color {20, 16, 22, 255},
+            diet * 0.64f + aggression * 0.12f,
+            226
+        );
+        fillEllipse(renderer_, mouthCenter.x, mouthCenter.y, slotWidth * 0.92f, biteGape * 0.78f, mouthCavity);
         fillTaperedCapsule(
             renderer_,
-            pointPlus(mouthCenter, sideVector * slotWidth),
-            pointPlus(mouthCenter, sideVector * -slotWidth),
-            slotHeight,
-            slotHeight,
-            tint(shadow, 0.56f, 224)
+            pointPlus(mouthCenter, sideVector * slotWidth + headAxis * (biteGape * 0.28f)),
+            pointPlus(mouthCenter, sideVector * -slotWidth + headAxis * (biteGape * 0.28f)),
+            biteGape * 0.34f,
+            biteGape * 0.26f,
+            lipColor
+        );
+        fillTaperedCapsule(
+            renderer_,
+            pointPlus(mouthCenter, sideVector * slotWidth - headAxis * (biteGape * 0.18f)),
+            pointPlus(mouthCenter, sideVector * -slotWidth - headAxis * (biteGape * 0.18f)),
+            biteGape * 0.28f,
+            biteGape * 0.22f,
+            mixColor(rim, lipColor, 0.34f, 196)
         );
         if (diet > 0.58f) {
-            const float jawReach = creature.traits.biteReach * worldScale * 0.11f;
+            const float jawReach = creature.traits.biteReach * worldScale * 0.12f;
             const SDL_FPoint jawTip = pointPlus(mouthCenter, headAxis * jawReach);
             fillTriangle(
                 renderer_,
-                pointPlus(mouthCenter, headAxis * (slotHeight * 0.65f) + sideVector * slotWidth * 0.62f),
+                pointPlus(mouthCenter, headAxis * (biteGape * 0.56f) + sideVector * slotWidth * 0.6f),
                 jawTip,
-                pointPlus(mouthCenter, headAxis * (slotHeight * 0.65f) - sideVector * slotWidth * 0.62f),
-                tint(shell, 0.9f, 168)
+                pointPlus(mouthCenter, headAxis * (biteGape * 0.56f) - sideVector * slotWidth * 0.6f),
+                mixColor(innerGlow, rim, 0.28f, 168)
             );
             fillTriangle(
                 renderer_,
-                pointPlus(mouthCenter, headAxis * (-slotHeight * 0.65f) + sideVector * slotWidth * 0.62f),
+                pointPlus(mouthCenter, headAxis * (-biteGape * 0.42f) + sideVector * slotWidth * 0.58f),
                 jawTip,
-                pointPlus(mouthCenter, headAxis * (-slotHeight * 0.65f) - sideVector * slotWidth * 0.62f),
-                tint(shell, 0.72f, 132)
+                pointPlus(mouthCenter, headAxis * (-biteGape * 0.42f) - sideVector * slotWidth * 0.58f),
+                mixColor(rim, shadow, 0.28f, 132)
+            );
+        } else {
+            fillEllipse(
+                renderer_,
+                mouthCenter.x + headAxis.x * biteGape * 0.08f,
+                mouthCenter.y + headAxis.y * biteGape * 0.08f,
+                slotWidth * 0.62f,
+                biteGape * 0.42f,
+                mixColor(innerGlow, lipColor, 0.48f, 120)
             );
         }
 
-        const int eyeCount = 1 + static_cast<int>(sensorExpressiveness > 0.44f);
+        const SDL_Color irisColor = hsv(
+            creature.genome.morphology.hue * (1.0f - aggression * 0.62f) + aggression * 0.03f,
+            0.72f,
+            0.44f + sensorExpressiveness * 0.12f
+        );
+        const int eyeCount = sensorExpressiveness > 0.76f ? 3 : (sensorExpressiveness > 0.42f ? 2 : 1);
         for (int eyeIndex = 0; eyeIndex < eyeCount; ++eyeIndex) {
-            const float eyeSide = eyeCount == 1 ? -0.22f : (eyeIndex == 0 ? -0.26f : 0.02f);
-            const float eyeRadius = headRadius * (eyeIndex == 0 ? 0.16f : 0.11f);
+            float eyeSide = 0.0f;
+            if (eyeCount == 2) {
+                eyeSide = eyeIndex == 0 ? -0.28f : 0.28f;
+            } else if (eyeCount == 3) {
+                eyeSide = eyeIndex == 0 ? -0.42f : (eyeIndex == 1 ? 0.0f : 0.42f);
+            }
+            const float eyeRadius = headRadius * (eyeCount == 1 ? 0.15f : (eyeIndex == 1 && eyeCount == 3 ? 0.11f : 0.13f));
             const SDL_FPoint eyePoint = pointPlus(
                 head,
-                headAxis * (headRadius * 0.16f) + headSide * (eyeSide * headRadius)
+                headAxis * (headRadius * (0.12f + sensorExpressiveness * 0.08f)) + headSide * (eyeSide * headRadius)
             );
-            fillEllipse(renderer_, eyePoint.x, eyePoint.y, eyeRadius, eyeRadius, eye);
+            fillEllipse(renderer_, eyePoint.x, eyePoint.y, eyeRadius, eyeRadius * 0.96f, eyeWhite);
             fillEllipse(
                 renderer_,
-                eyePoint.x + forwardVector.x * eyeRadius * 0.12f,
-                eyePoint.y + forwardVector.y * eyeRadius * 0.12f,
+                eyePoint.x + forwardVector.x * eyeRadius * 0.06f,
+                eyePoint.y + forwardVector.y * eyeRadius * 0.06f,
+                eyeRadius * 0.56f,
+                eyeRadius * 0.56f,
+                irisColor
+            );
+            fillEllipse(
+                renderer_,
+                eyePoint.x + forwardVector.x * eyeRadius * 0.14f,
+                eyePoint.y + forwardVector.y * eyeRadius * 0.14f,
                 eyeRadius * 0.42f,
                 eyeRadius * 0.42f,
                 {14, 16, 20, 255}
             );
             fillEllipse(
                 renderer_,
-                eyePoint.x - eyeRadius * 0.22f,
-                eyePoint.y - eyeRadius * 0.22f,
+                eyePoint.x - eyeRadius * 0.24f,
+                eyePoint.y - eyeRadius * 0.24f,
                 eyeRadius * 0.2f,
                 eyeRadius * 0.2f,
                 {244, 246, 248, 180}
+            );
+            fillEllipse(
+                renderer_,
+                eyePoint.x,
+                eyePoint.y,
+                eyeRadius * 1.06f,
+                eyeRadius * 1.02f,
+                mixColor(rim, shadow, 0.2f, 54)
             );
         }
 
@@ -1596,18 +1701,17 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
             const float t = static_cast<float>(markIndex) / static_cast<float>(std::max(1, markCount - 1));
             const int segmentIndex = std::clamp(1 + markIndex, 1, kBodySegments - 2);
             const SDL_FPoint center = screenPoints[segmentIndex];
-            const Vec2 axis = nosewardAxisAt(segmentIndex);
-            const Vec2 side {-axis.y, axis.x};
-            const float markLength = creature.bodyRadii[segmentIndex] * worldScale * lerp(0.42f, 0.68f, t);
-            const float markHeight = creature.bodyRadii[segmentIndex] * worldScale * lerp(0.08f, 0.14f, 1.0f - t);
-            const SDL_FPoint markCenter = pointPlus(center, side * (creature.bodyRadii[segmentIndex] * worldScale * (0.08f + t * 0.06f)));
+            const Vec2 side = frames[segmentIndex].side;
+            const float markLength = frames[segmentIndex].radius * lerp(0.46f, 0.74f, t);
+            const float markHeight = frames[segmentIndex].radius * lerp(0.08f, 0.14f, 1.0f - t);
+            const SDL_FPoint markCenter = pointPlus(center, side * (frames[segmentIndex].radius * (0.08f + t * 0.06f)));
             fillTaperedCapsule(
                 renderer_,
                 pointPlus(markCenter, side * markLength),
                 pointPlus(markCenter, side * -markLength),
                 markHeight,
                 markHeight,
-                tint(shell, 0.52f, 106)
+                mixColor(rim, shadow, 0.18f + creature.genome.morphology.pattern * 0.26f, 106)
             );
         }
 

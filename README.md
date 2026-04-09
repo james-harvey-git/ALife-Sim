@@ -9,7 +9,7 @@ This repository is a fresh start from the older predator/prey project. Instead o
 - One ancestral species at startup, no fixed predator or prey classes
 - Physics-first phenotype model where geometry drives movement and interaction
 - Continuous grazing, scavenging, and hunting tradeoffs instead of discrete diets
-- Segmented procedural sprite rendering tied directly to evolved body traits
+- Demo-inspired procedural phenotype rendering tied directly to evolved body traits and action state
 - Articulated body chains that lag, bend, and now feed back into propulsion and turning through regional hydrodynamics
 - Reef-like substrate structures that create shelter, edge shear, and nutrient pockets
 - Reef wakes now create lee-shelter niches that reduce local flow behind structures
@@ -46,6 +46,7 @@ The first playable milestone in this repo includes:
 - per-segment reef contact response with morphology-derived hold vs scrape tradeoffs, so reef-hugging and open-water bodies interact differently with substrate
 - reef-aware observations including substrate proximity, lee shelter, and local shear
 - visible spine/scute cues for spike-heavy bodies so substrate-specialized contact traits are not hidden from the renderer
+- softer body-ribbon skinning, richer facial anatomy, and attached appendage rendering so creatures read as coherent organisms instead of stacked primitives
 - grazing, carrion feeding, and live predation
 - reproduction with mutation from a single ancestor genome, tempered by recent foraging success
 - branching lineage tracking for major brain-topology divergences
