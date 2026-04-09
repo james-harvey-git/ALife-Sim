@@ -188,6 +188,7 @@ struct Creature {
 
 struct Bloom {
     Vec2 position {};
+    Vec2 velocity {};
     float energy = 65.0f;
     float maxEnergy = 90.0f;
     float regrowthRate = 10.0f;
@@ -195,6 +196,7 @@ struct Bloom {
 
 struct Carrion {
     Vec2 position {};
+    Vec2 velocity {};
     float energy = 40.0f;
     float decayRate = 5.0f;
 };
@@ -335,6 +337,9 @@ struct SelectionInfo {
     float bodyStrain = 0.0f;
     float bodyCompression = 0.0f;
     float propulsionCoupling = 0.0f;
+    float worldSpeed = 0.0f;
+    float swimSpeed = 0.0f;
+    float currentSpeed = 0.0f;
     float substrateProximity = 0.0f;
     float substrateContact = 0.0f;
     float substrateGrip = 0.0f;
@@ -401,6 +406,9 @@ struct CreatureSnapshot {
     float bodyStrain = 0.0f;
     float bodyCompression = 0.0f;
     float propulsionCoupling = 0.0f;
+    float worldSpeed = 0.0f;
+    float swimSpeed = 0.0f;
+    float currentSpeed = 0.0f;
     float headIntegrity = 0.0f;
     float tailIntegrity = 0.0f;
 };

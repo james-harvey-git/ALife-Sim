@@ -459,6 +459,9 @@ void printTextCreatureSnapshot(const char* label, const alife::CreatureSnapshot&
         << " age=" << snapshot.age
         << " mass=" << snapshot.mass
         << " body=" << snapshot.majorRadius << "x" << snapshot.minorRadius
+        << " move=" << snapshot.worldSpeed
+        << " swim=" << snapshot.swimSpeed
+        << " flow=" << snapshot.currentSpeed
         << " head=" << snapshot.headIntegrity
         << " tail=" << snapshot.tailIntegrity
         << " contact=" << snapshot.substrateContact
@@ -568,6 +571,9 @@ void printJsonCreatureSnapshot(const alife::CreatureSnapshot& snapshot) {
         << ",\"mass\":" << snapshot.mass
         << ",\"major_radius\":" << snapshot.majorRadius
         << ",\"minor_radius\":" << snapshot.minorRadius
+        << ",\"world_speed\":" << snapshot.worldSpeed
+        << ",\"swim_speed\":" << snapshot.swimSpeed
+        << ",\"current_speed\":" << snapshot.currentSpeed
         << ",\"sensor_range\":" << snapshot.sensorRange
         << ",\"brain_complexity\":" << snapshot.brainComplexity
         << ",\"plant_affinity\":" << snapshot.plantAffinity

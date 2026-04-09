@@ -57,6 +57,7 @@ The long-term goal is not a scripted predator/prey toy. The goal is a watchable,
 - Native inspection HUD with history graphs, ecology drift, lineage telemetry, a live brain-topology overlay, a scrollable selection inspector, and selection readouts including slip/curvature-style body metrics.
 - The app now boots with a subject selected, and the HUD exposes explicit observer picks (`random subject`, `top energy`, `dominant lineage`, `newest branch`) to support QA and watchability.
 - The world view now has a real follow camera with zoom controls, and the app boots in a closer subject-following view to make visual QA and screenshotting practical.
+- Follow mode should behave like an observer camera with a leash/dead zone, not a constant center-lock that makes the whole world slide on every tiny subject movement.
 - Observer selection is lineage-aware: when a watched creature dies, the sim should try to stay on that clade instead of immediately jumping to an unrelated organism.
 - The renderer also has habitat overlay modes (`V`) for visual QA of nutrient, lee-shelter, and shear fields.
 - The world view and the right-hand HUD now share the same OpenGL-backed frame path. Avoid reintroducing split SDL-renderer hacks.

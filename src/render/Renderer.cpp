@@ -64,7 +64,8 @@ constexpr float kPi = 3.14159265358979323846f;
 constexpr float kMinCameraZoom = 1.0f;
 constexpr float kMaxCameraZoom = 14.0f;
 constexpr float kDefaultCameraZoom = 6.5f;
-constexpr float kCameraFollowBlend = 0.2f;
+constexpr float kCameraFollowBlend = 0.18f;
+constexpr float kCameraDeadZoneFraction = 0.14f;
 constexpr float kLineWidth = 1.2f;
 
 float clamp01(float value) {
@@ -876,6 +877,17 @@ void Renderer::resetCamera(const Simulation& simulation) {
     focusSelection(simulation, true);
 }
 
+Vec2 Renderer::visibleWorldExtents(const Simulation& simulation) const {
+    const float worldScale = std::min(worldViewport_.w / simulation.worldWidth(), worldViewport_.h / simulation.worldHeight()) * cameraZoom_;
+    if (worldScale <= 1e-5f) {
+        return {simulation.worldWidth(), simulation.worldHeight()};
+    }
+    return {
+        worldViewport_.w / worldScale,
+        worldViewport_.h / worldScale
+    };
+}
+
 void Renderer::focusSelection(const Simulation& simulation, bool snap) {
     const CreatureSnapshot selected = simulation.selectedCreatureSnapshot();
     if (selected.valid) {
@@ -886,7 +898,31 @@ void Renderer::focusSelection(const Simulation& simulation, bool snap) {
                 shortestWrappedOffset(selected.position.x - cameraCenter_.x, simulation.worldWidth()),
                 shortestWrappedOffset(selected.position.y - cameraCenter_.y, simulation.worldHeight())
             };
-            cameraCenter_ = wrapWorldPoint(cameraCenter_ + delta * kCameraFollowBlend, simulation.worldWidth(), simulation.worldHeight());
+            const Vec2 visible = visibleWorldExtents(simulation);
+            const Vec2 deadZone {
+                visible.x * kCameraDeadZoneFraction,
+                visible.y * kCameraDeadZoneFraction
+            };
+            Vec2 followTarget = cameraCenter_;
+
+            if (std::abs(delta.x) > deadZone.x) {
+                const float overflow = delta.x - std::copysign(deadZone.x, delta.x);
+                followTarget.x += overflow;
+            }
+            if (std::abs(delta.y) > deadZone.y) {
+                const float overflow = delta.y - std::copysign(deadZone.y, delta.y);
+                followTarget.y += overflow;
+            }
+
+            const Vec2 correction {
+                shortestWrappedOffset(followTarget.x - cameraCenter_.x, simulation.worldWidth()),
+                shortestWrappedOffset(followTarget.y - cameraCenter_.y, simulation.worldHeight())
+            };
+            cameraCenter_ = wrapWorldPoint(
+                cameraCenter_ + correction * kCameraFollowBlend,
+                simulation.worldWidth(),
+                simulation.worldHeight()
+            );
         }
         cameraInitialized_ = true;
         return;
@@ -1805,7 +1841,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     drawCard(selectionCard, "Selection");
     selectionViewport_ = {selectionCard.x + 10.0f, selectionCard.y + 32.0f, selectionCard.w - 20.0f, selectionCard.h - 42.0f};
 
-    const float selectionContentHeight = info.valid ? 395.0f : 150.0f;
+    const float selectionContentHeight = info.valid ? 418.0f : 150.0f;
     const float maxSelectionScroll = std::max(0.0f, selectionContentHeight - selectionViewport_.h);
     selectionScroll_ = std::clamp(selectionScroll_, 0.0f, maxSelectionScroll);
 
@@ -1834,6 +1870,16 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         );
         sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "energy " + formatFloat(info.energy, 1) + "  health " + formatFloat(info.health, 1) + "  age " + formatFloat(info.age, 1), {219, 226, 233, 255});
+        sy += 18.0f;
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "move " + formatFloat(info.worldSpeed, 1)
+                + "  swim " + formatFloat(info.swimSpeed, 1)
+                + "  flow " + formatFloat(info.currentSpeed, 1),
+            {194, 210, 223, 255}
+        );
         sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "mass " + formatFloat(info.mass, 1) + "  body " + formatFloat(info.majorRadius, 1) + " x " + formatFloat(info.minorRadius, 1), {219, 226, 233, 255});
         sy += 18.0f;

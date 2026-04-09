@@ -79,7 +79,7 @@ Phase 0 of the roadmap is now in place: the sim has grouped configuration, state
 - `Left Click`: select the nearest creature in the sim view
 - `Esc`: quit
 
-On launch, the sim starts with one creature already selected and the camera already zoomed in and following that subject, so close-up QA screenshots are easier to capture. If a watched creature dies, the observer now tries to stay locked onto the same lineage before falling back to broader picks.
+On launch, the sim starts with one creature already selected and the camera already zoomed in and following that subject, so close-up QA screenshots are easier to capture. Follow mode now uses a dead-zone leash instead of a soft center-lock, so the subject can move around locally without making the whole world slide on every small wiggle. If a watched creature dies, the observer now tries to stay locked onto the same lineage before falling back to broader picks.
 
 ## Build
 

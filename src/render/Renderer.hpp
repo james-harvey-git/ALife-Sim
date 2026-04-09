@@ -77,6 +77,7 @@ private:
 
     void updateViewport(const Simulation& simulation);
     void updateCamera(const Simulation& simulation);
+    Vec2 visibleWorldExtents(const Simulation& simulation) const;
     Vec2 wrappedPositionNearCamera(const Vec2& point, const Simulation& simulation) const;
     SDL_FPoint worldToScreen(const Vec2& world, const Simulation& simulation) const;
     const char* debugOverlayLabel() const;

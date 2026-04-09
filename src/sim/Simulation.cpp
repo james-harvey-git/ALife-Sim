@@ -241,12 +241,12 @@ float sampleNutrientField(float x, float y, float timeSeconds) {
 }
 
 Vec2 sampleCurrentField(float x, float y, float timeSeconds) {
-    // Keep currents ecologically meaningful, but no longer so dominant that
-    // active swimmers read as passive drift particles.
-    const float flowX = std::sin(y * 0.0053f + timeSeconds * 0.33f) * 13.5f
-        + std::cos((x + y) * 0.0017f - timeSeconds * 0.18f) * 6.0f;
-    const float flowY = std::cos(x * 0.0042f - timeSeconds * 0.21f) * 11.0f
-        + std::sin((x - y) * 0.0021f + timeSeconds * 0.12f) * 5.0f;
+    // Currents should create niches and bias movement, not overwhelm the
+    // distinction between active swimmers and passive drift.
+    const float flowX = std::sin(y * 0.0053f + timeSeconds * 0.29f) * 7.6f
+        + std::cos((x + y) * 0.0017f - timeSeconds * 0.16f) * 3.2f;
+    const float flowY = std::cos(x * 0.0042f - timeSeconds * 0.18f) * 6.5f
+        + std::sin((x - y) * 0.0021f + timeSeconds * 0.11f) * 2.9f;
     return {flowX, flowY};
 }
 
@@ -604,6 +604,23 @@ Vec2 sampleCurrentWithReefs(
     return base * slowdown + habitat.currentOffset;
 }
 
+void advectLooseResource(
+    Vec2& position,
+    Vec2& velocity,
+    float dt,
+    float flowCoupling,
+    float responseRate,
+    float worldWidth,
+    float worldHeight,
+    float timeSeconds,
+    const std::vector<Reef>& reefs
+) {
+    const Vec2 flow = sampleCurrentWithReefs(position.x, position.y, timeSeconds, reefs, worldWidth, worldHeight);
+    const float blend = std::clamp(responseRate * dt, 0.0f, 1.0f);
+    velocity = velocity + (flow * flowCoupling - velocity) * blend;
+    position = wrapPosition(position + velocity * dt, worldWidth, worldHeight);
+}
+
 float sampleLocalShear(
     float x,
     float y,
@@ -881,7 +898,7 @@ Traits deriveTraits(const Genome& genome) {
 
     traits.collisionRadius = bodyCoverage * 0.58f + spikeBonus * 0.25f;
     traits.mass = (bodyMass + 6.0f) * (0.92f + armorBonus * 0.12f);
-    traits.forwardThrust = (52.0f + driveSum * 48.0f * finBonus) / (0.62f + std::sqrt(traits.mass) * 0.14f);
+    traits.forwardThrust = (58.0f + driveSum * 56.0f * finBonus) / (0.62f + std::sqrt(traits.mass) * 0.14f);
     traits.turnTorque = (1.6f + angularLeverage * 3.6f) / (0.78f + traits.mass * 0.022f);
     traits.forwardDrag = forwardDragSum / static_cast<float>(kBodySegments);
     traits.lateralDrag = lateralDragSum / static_cast<float>(kBodySegments);
@@ -1343,7 +1360,7 @@ Genome makeAncestorGenome(
     appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 3, NodeKind::Output, 1, 1.0f);
     appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 5, NodeKind::Output, 1, -0.55f);
     appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 6, NodeKind::Output, 1, -0.55f);
-    genome.brain.outputBias[1] = 0.2f;
+    genome.brain.outputBias[1] = 0.38f;
 
     appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 0, NodeKind::Output, 2, 1.4f);
     appendConnection(genome.brain, innovations, nextInnovationId, NodeKind::Hidden, 1, NodeKind::Output, 2, 0.7f);
@@ -1792,7 +1809,7 @@ void integrateBodyChain(
             * (std::sin(creature.gaitPhase - t * 1.18f)
                 * creature.traits.segmentDrive[segmentIndex]
                 * creature.traits.forwardThrust
-                * (0.18f + thrustDrive * 0.42f)
+                * (0.24f + thrustDrive * 0.6f)
                 * (0.2f + integrity * 0.8f));
 
         creature.bodyVelocities[segmentIndex] = previousVelocities[segmentIndex] + (spring + dragForce + tailDrive) * dt;
@@ -1938,9 +1955,9 @@ void integrateBodyChain(
     }
 
     const float inverseMass = 1.0f / std::max(creature.traits.mass, 1.0f);
-    const Vec2 reactionImpulse = hydrodynamicForce * (inverseMass * dt * 14.0f);
+    const Vec2 reactionImpulse = hydrodynamicForce * (inverseMass * dt * 18.0f);
     creature.velocity = creature.velocity + reactionImpulse;
-    const Vec2 reactionDisplacement = reactionImpulse * (dt * 0.38f);
+    const Vec2 reactionDisplacement = reactionImpulse * (dt * 0.46f);
     creature.position = wrapPosition(creature.position + reactionDisplacement, worldWidth, worldHeight);
     translateBody(creature, reactionDisplacement, worldWidth, worldHeight);
 
@@ -2366,6 +2383,8 @@ EnvironmentProbe Simulation::probeEnvironment(float x, float y) const {
 }
 
 CreatureSnapshot Simulation::makeCreatureSnapshot(const Creature& creature) const {
+    const Vec2 current = sampleCurrent(creature.position.x, creature.position.y);
+    const Vec2 swimVelocity = creature.velocity - current;
     return CreatureSnapshot {
         .valid = true,
         .id = creature.id,
@@ -2392,6 +2411,9 @@ CreatureSnapshot Simulation::makeCreatureSnapshot(const Creature& creature) cons
         .bodyStrain = creature.bodyStrain,
         .bodyCompression = creature.bodyCompression,
         .propulsionCoupling = creature.propulsionCoupling,
+        .worldSpeed = length(creature.velocity),
+        .swimSpeed = length(swimVelocity),
+        .currentSpeed = length(current),
         .headIntegrity = segmentIntegrity(creature, 0),
         .tailIntegrity = averageSegmentIntegrity(creature, std::max(1, kBodySegments - 2), kBodySegments)
     };
@@ -2707,6 +2729,10 @@ SelectionInfo Simulation::selectionInfo() const {
     info.bodyStrain = it->bodyStrain;
     info.bodyCompression = it->bodyCompression;
     info.propulsionCoupling = it->propulsionCoupling;
+    const Vec2 current = sampleCurrent(it->position.x, it->position.y);
+    info.worldSpeed = length(it->velocity);
+    info.swimSpeed = length(it->velocity - current);
+    info.currentSpeed = length(current);
     info.substrateProximity = it->substrateProximity;
     info.substrateContact = it->substrateContact;
     info.substrateGrip = it->substrateGrip;
@@ -2766,6 +2792,17 @@ void Simulation::step(float dt) {
     );
 
     for (Bloom& bloom : blooms_) {
+        advectLooseResource(
+            bloom.position,
+            bloom.velocity,
+            dt,
+            0.08f,
+            0.95f,
+            worldWidth_,
+            worldHeight_,
+            timeSeconds_,
+            reefs_
+        );
         const float nutrient = sampleNutrient(bloom.position.x, bloom.position.y);
         const float bloomDraw = bloom.regrowthRate * nutrient * stats_.season * dt;
         const float harvested = harvestNutrientGrid(
@@ -2781,6 +2818,17 @@ void Simulation::step(float dt) {
     }
 
     for (Carrion& chunk : carrion_) {
+        advectLooseResource(
+            chunk.position,
+            chunk.velocity,
+            dt,
+            0.22f,
+            1.25f,
+            worldWidth_,
+            worldHeight_,
+            timeSeconds_,
+            reefs_
+        );
         chunk.energy -= chunk.decayRate * dt;
     }
     carrion_.erase(std::remove_if(carrion_.begin(), carrion_.end(), [](const Carrion& carrion) {
@@ -2946,7 +2994,7 @@ void Simulation::step(float dt) {
         forwardVelocity += thrustInput
             * creature.traits.forwardThrust
             * tailPulse
-            * (0.36f + tailIntegrity * 0.28f + swimCoupling * 0.38f)
+            * (0.48f + tailIntegrity * 0.34f + swimCoupling * 0.46f)
             * dt;
         forwardVelocity *= std::exp(-creature.traits.forwardDrag * dt);
         lateralVelocity *= std::exp(-creature.traits.lateralDrag * dt);
@@ -3487,6 +3535,7 @@ void Simulation::step(float dt) {
 
         Carrion chunk {};
         chunk.position = creature.position;
+        chunk.velocity = creature.velocity * 0.35f;
         chunk.energy = std::max(18.0f, creature.traits.carrionYield + creature.energy * 0.25f);
         chunk.decayRate = lerp(3.0f, 7.5f, creature.genome.morphology.armor);
         carrion_.push_back(chunk);
