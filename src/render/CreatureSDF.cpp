@@ -375,10 +375,15 @@ void CreatureSDF::packAndClassify(const Simulation& sim,
             cc.tier = 2;  // Dot
         }
 
-        // Generous padding for appendages (fins, tail, jaw)
-        float appendagePad = headScreenDiameter * 1.5f;
-        cc.aabb = {minX - appendagePad, minY - appendagePad,
-                   maxX + appendagePad, maxY + appendagePad};
+        // Expand AABB for appendages (fins, whiskers, tails extend beyond segment radii)
+        float avgScreenRadius = 0.0f;
+        for (int s = 0; s < kBodySegments; ++s) {
+            avgScreenRadius += cc.segRadiiScreen[s];
+        }
+        avgScreenRadius /= static_cast<float>(kBodySegments);
+        float appendageMargin = avgScreenRadius * 1.8f;
+        cc.aabb = {minX - appendageMargin, minY - appendageMargin,
+                   maxX + appendageMargin, maxY + appendageMargin};
 
         // Cull off-screen creatures
         if (cc.aabb.maxX < 0.0f || cc.aabb.minX > screenW ||
