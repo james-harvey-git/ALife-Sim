@@ -293,24 +293,46 @@ void main() {
             }
         }
 
-        // ── Whiskers ──
-        int whiskerCount = (sensorExpr > 0.4) ? ((sensorExpr > 0.7) ? 2 : 1) : 0;
+        // ── Whiskers — sensory antennae ──
+        float sensorExpr2 = sensorExpr;
+        int whiskerCount = (sensorExpr2 > 0.80) ? 3 :
+                           (sensorExpr2 > 0.55) ? 2 :
+                           (sensorExpr2 > 0.25) ? 1 : 0;
         if (whiskerCount > 0) {
             vec2 headPos2 = fetchSegPos(ci, 0);
             float headR = fetchSegRadius(ci, 0);
             vec2 headAxis = fetchForwardAxis(ci);
             vec2 headPerp = vec2(-headAxis.y, headAxis.x);
 
-            for (int w = 0; w < 2; w++) {
+            for (int w = 0; w < 3; w++) {
                 if (w >= whiskerCount) break;
-                float wSide = (w == 0) ? -1.0 : 1.0;
-                vec2 wBase = headPos2 + headPerp * wSide * headR * 0.6
-                           - headAxis * headR * 0.3;
-                float wiggle = sin(gaitPhase * 2.6 + float(w) * 1.4) * 0.15;
-                vec2 wTip = wBase + headPerp * wSide * headR * 1.2
-                          + headAxis * (wiggle * headR);
-                float ww = headR * 0.06;
-                dOrganism = smin(dOrganism, sdTaperedCapsule(vFragPos, wBase, wTip, ww, ww * 0.2), ww * 1.5);
+
+                float wSide;
+                if (whiskerCount == 1) wSide = 0.0;  // central
+                else if (whiskerCount == 2) wSide = (w == 0) ? -1.0 : 1.0;
+                else wSide = (w == 0) ? -1.0 : ((w == 1) ? 0.0 : 1.0);
+
+                vec2 wBase = headPos2 + headPerp * wSide * headR * 0.5
+                           + headAxis * headR * 0.15;  // angled forward
+
+                // Dual harmonic trembling
+                float wiggle = sin(gaitPhase * 2.6 + float(w) * 1.4) * 0.18
+                             + sin(gaitPhase * 4.1 + float(w) * 2.3) * 0.06;
+
+                vec2 wTip = wBase
+                    + headPerp * wSide * headR * 1.2
+                    + headAxis * (headR * 0.6 + wiggle * headR)  // forward reach
+                    ;
+                // For central whisker (wSide=0), extend purely forward
+                if (abs(wSide) < 0.1) {
+                    wTip = wBase + headAxis * headR * 1.8
+                         + headPerp * wiggle * headR * 0.5;
+                }
+
+                float ww = headR * 0.05;
+                dOrganism = smin(dOrganism,
+                    sdTaperedCapsule(vFragPos, wBase, wTip, ww, ww * 0.08),
+                    ww * 1.5);
             }
         }
 
