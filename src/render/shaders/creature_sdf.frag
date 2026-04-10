@@ -115,9 +115,9 @@ vec3 hsl2rgb(float h, float s, float l) {
 void main() {
     int ci = uDataOffset + vInstanceID;
 
-    // ── Stage 1: Body core — 6-segment smooth blend ──
-
-    float dBody = 1e9;
+    // ── Stage 1: Body core — capsule chain with smooth blend ──
+    // Uses tapered capsules between adjacent segments for continuous organic shape
+    // (instead of individual circles that produce a chain-of-balls look)
 
     int segCount = (uLodTier == 0) ? 6 : 3;
     int segIndices[6] = int[6](0, 1, 2, 3, 4, 5);
@@ -128,49 +128,55 @@ void main() {
         segIndices[2] = 5;
     }
 
-    // Compute average radius for reference scale
+    // Fetch all segment positions and radii
+    vec2 segPos[6];
+    float segR[6];
     float avgRadius = 0.0;
     for (int i = 0; i < segCount; i++) {
-        avgRadius += fetchSegRadius(ci, segIndices[i]);
+        int si = segIndices[i];
+        segPos[i] = fetchSegPos(ci, si);
+        segR[i] = fetchSegRadius(ci, si);
+        avgRadius += segR[i];
     }
     avgRadius /= float(segCount);
 
     // Per-creature blend parameters
     float taperCurve = fetchTaperCurve(ci);
     float blendStiffness = fetchBlendStiffness(ci);
+    float headR0 = segR[0];
 
-    for (int i = 0; i < segCount; i++) {
-        int si = segIndices[i];
-        vec2 segPos = fetchSegPos(ci, si);
-        float segR = fetchSegRadius(ci, si);
+    // Build body from tapered capsules between adjacent segments
+    // plus a head circle for the rounded head cap
+    float dBody = sdCircle(vFragPos - segPos[0], headR0);
 
-        // Variable blend kernel: generous at head, tight at tail
+    for (int i = 1; i < segCount; i++) {
+        // Tapered capsule from segment i-1 to segment i
+        float dCap = sdTaperedCapsule(vFragPos, segPos[i-1], segPos[i], segR[i-1], segR[i]);
+
+        // Blend kernel: generous at head, tighter toward tail
         float segT = float(i) / max(float(segCount - 1), 1.0);
         float k = avgRadius
-                * mix(0.55, 0.18, segT * segT * taperCurve)
-                * mix(1.2, 0.5, blendStiffness);
+                * mix(0.55, 0.22, segT * segT * taperCurve)
+                * mix(1.1, 0.55, blendStiffness);
 
-        float d = sdCircle(vFragPos - segPos, segR);
-        dBody = smin(dBody, d, k);
+        dBody = smin(dBody, dCap, k);
     }
 
     // Asymmetric head: slight forward-axis elongation driven by diet
     if (uLodTier == 0) {
         float diet = fetchFloat(ci, 36);
-        vec2 headPos = fetchSegPos(ci, 0);
-        float headR = fetchSegRadius(ci, 0);
         vec2 fwd = fetchForwardAxis(ci);
 
         // Elongation factor: 1.0 (herbivore) to 1.15 (carnivore)
         float headElong = 1.0 + diet * 0.15;
         // Compress distance along forward axis to create ellipse
-        vec2 toFrag = vFragPos - headPos;
+        vec2 toFrag = vFragPos - segPos[0];
         float fwdDist = dot(toFrag, fwd);
         vec2 squeezed = toFrag - fwd * fwdDist * (1.0 - 1.0 / headElong);
-        float dHeadEllipse = length(squeezed) - headR;
+        float dHeadEllipse = length(squeezed) - headR0;
 
         // Blend elongated head into body with generous kernel
-        float headK = avgRadius * 0.5 * mix(1.2, 0.5, blendStiffness);
+        float headK = avgRadius * 0.5 * mix(1.1, 0.55, blendStiffness);
         dBody = smin(dBody, dHeadEllipse, headK);
     }
 
@@ -400,7 +406,9 @@ void main() {
         dMouth = mix(dMouthHerb, dMouthCarn, diet);
 
         float carveDepth = smoothstep(0.0, -headR3 * 0.15, sdCircle(vFragPos - headPos3, headR3));
-        float dMouthCarve = mix(0.05, dMouth, carveDepth);
+        // Fallback must be large so mouth carve doesn't clip body far from head
+        // (0.05 was clamping entire body SDF to -0.05, causing ~55% transparency)
+        float dMouthCarve = mix(1e4, dMouth, carveDepth);
 
         dOrganism = max(dOrganism, -dMouthCarve);
 
@@ -438,8 +446,8 @@ void main() {
     float energy = fetchFloat(ci, 35);
 
     vec3 baseCol = hsl2rgb(hue, sat, lit);
-    vec3 rimCol = hsl2rgb(hue - 0.03, sat * 1.1, lit - 0.24);
-    vec3 innerCol = hsl2rgb(hue + 0.06, sat * 0.7, lit + 0.22);
+    vec3 rimCol = hsl2rgb(hue - 0.03, sat * 1.1, lit - 0.18);
+    vec3 innerCol = hsl2rgb(hue + 0.04, sat * 0.7, lit + 0.16);
     vec3 energyCol = hsl2rgb(hue + 0.1, 1.0, 0.72);
 
     // ── Pixel-scale edge quality ──
@@ -459,7 +467,7 @@ void main() {
 
     vec3 col = mix(baseCol, innerCol, inner * 0.55);
     col = mix(col, rimCol, rim * 0.5);
-    col += energyCol * energy * 0.20 * inner;
+    col += energyCol * energy * 0.12 * inner;
 
     // Per-segment damage visualization
     if (uLodTier == 0) {
@@ -508,9 +516,9 @@ void main() {
     if (uLodTier == 0) {
         vec2 hp = fetchSegPos(ci, 0);
         float headD = sdCircle(vFragPos - hp, fetchSegRadius(ci, 0));
-        float sss = smoothstep(0.0, -avgRadius * 0.7, headD)
-                  * smoothstep(-avgRadius * 0.7, 0.0, headD + avgRadius * 0.35);
-        col += hsl2rgb(hue + 0.08, 0.5, 0.9) * sss * 0.25 * (0.5 + energy * 0.5);
+        float sss = smoothstep(0.0, -avgRadius * 0.6, headD)
+                  * smoothstep(-avgRadius * 0.6, 0.0, headD + avgRadius * 0.3);
+        col += hsl2rgb(hue + 0.08, 0.5, 0.9) * sss * 0.18 * (0.5 + energy * 0.5);
     }
 
     // Outline: desaturated dark shadow edge
