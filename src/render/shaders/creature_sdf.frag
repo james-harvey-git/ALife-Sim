@@ -314,25 +314,31 @@ void main() {
             }
         }
 
-        // ── Spikes ──
+        // ── Spikes — smooth dorsal ridges ──
         if (spikes > 0.28) {
+            vec2 headFwd = fetchForwardAxis(ci);
+            // Determine dorsal side consistently (perpendicular to forward, pick one side)
+            vec2 dorsalDir = vec2(-headFwd.y, headFwd.x);
+
             for (int s = 1; s <= 4; s++) {
                 vec2 sPos = fetchSegPos(ci, s);
                 float sR = fetchSegRadius(ci, s);
                 vec2 sDir = fetchSegPos(ci, s - 1) - sPos;
                 float sDirLen = length(sDir);
                 vec2 sAxis = (sDirLen > 0.001) ? sDir / sDirLen : vec2(1.0, 0.0);
-                vec2 sPerp = vec2(-sAxis.y, sAxis.x);
 
-                float spikeLen = sR * (0.05 + spikes * 0.22);
-                vec2 sBase = sPos + sPerp * sR * 0.85;
-                vec2 sTip = sBase + sPerp * spikeLen;
-                vec2 sBaseR = sPos - sPerp * sR * 0.85;
-                vec2 sTipR = sBaseR - sPerp * spikeLen;
+                // Ridge protrudes from dorsal side, angled slightly backward
+                float ridgeLen = sR * (0.05 + spikes * 0.15);
+                float ridgeW = sR * 0.14;
 
-                float sw = sR * 0.06;
-                dOrganism = min(dOrganism, sdTaperedCapsule(vFragPos, sBase, sTip, sw, sw * 0.15));
-                dOrganism = min(dOrganism, sdTaperedCapsule(vFragPos, sBaseR, sTipR, sw, sw * 0.15));
+                vec2 ridgeBase = sPos + dorsalDir * sR * 0.8;
+                vec2 ridgeTip = ridgeBase + dorsalDir * ridgeLen
+                              - sAxis * ridgeLen * 0.35;  // backward curve
+
+                // Organic blend into body
+                dOrganism = smin(dOrganism,
+                    sdTaperedCapsule(vFragPos, ridgeBase, ridgeTip, ridgeW, ridgeW * 0.4),
+                    ridgeW * 2.0);
             }
         }
 
