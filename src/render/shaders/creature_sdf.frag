@@ -148,18 +148,26 @@ void main() {
     // Build body from tapered capsules between adjacent segments
     // plus a head circle for the rounded head cap
     float dBody = sdCircle(vFragPos - segPos[0], headR0);
+    // Max reasonable distance between adjacent segments (avoids world-wrap artifacts)
+    float maxSegDist = avgRadius * 6.0;
 
     for (int i = 1; i < segCount; i++) {
-        // Tapered capsule from segment i-1 to segment i
-        float dCap = sdTaperedCapsule(vFragPos, segPos[i-1], segPos[i], segR[i-1], segR[i]);
-
         // Blend kernel: generous at head, tighter toward tail
         float segT = float(i) / max(float(segCount - 1), 1.0);
         float k = avgRadius
                 * mix(0.55, 0.22, segT * segT * taperCurve)
                 * mix(1.1, 0.55, blendStiffness);
 
-        dBody = smin(dBody, dCap, k);
+        float segDist = length(segPos[i] - segPos[i-1]);
+        if (segDist < maxSegDist) {
+            // Normal case: tapered capsule between adjacent segments
+            float dCap = sdTaperedCapsule(vFragPos, segPos[i-1], segPos[i], segR[i-1], segR[i]);
+            dBody = smin(dBody, dCap, k);
+        } else {
+            // World-wrap: fall back to individual circle
+            float d = sdCircle(vFragPos - segPos[i], segR[i]);
+            dBody = smin(dBody, d, k);
+        }
     }
 
     // Asymmetric head: slight forward-axis elongation driven by diet
