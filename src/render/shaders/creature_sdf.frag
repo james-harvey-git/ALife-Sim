@@ -60,6 +60,14 @@ float fetchFloat(int creatureIdx, int floatIdx) {
     return data.w;
 }
 
+// ── New data fetch helpers for visual quality floats ──
+float fetchBlendStiffness(int ci) { return fetchFloat(ci, 52); }
+float fetchTailWaveSpeed(int ci)  { return fetchFloat(ci, 53); }
+float fetchTailWaveLength(int ci) { return fetchFloat(ci, 54); }
+float fetchTailTaper(int ci)      { return fetchFloat(ci, 55); }
+float fetchFinShape(int ci)       { return fetchFloat(ci, 56); }
+float fetchTaperCurve(int ci)     { return fetchFloat(ci, 57); }
+
 // ── SDF primitives ──
 
 float sdCircle(vec2 p, float r) {
@@ -120,20 +128,50 @@ void main() {
         segIndices[2] = 5;
     }
 
-    // Compute average radius for blend kernel
+    // Compute average radius for reference scale
     float avgRadius = 0.0;
     for (int i = 0; i < segCount; i++) {
         avgRadius += fetchSegRadius(ci, segIndices[i]);
     }
     avgRadius /= float(segCount);
-    float blendK = avgRadius * 0.55;
+
+    // Per-creature blend parameters
+    float taperCurve = fetchTaperCurve(ci);
+    float blendStiffness = fetchBlendStiffness(ci);
 
     for (int i = 0; i < segCount; i++) {
         int si = segIndices[i];
         vec2 segPos = fetchSegPos(ci, si);
         float segR = fetchSegRadius(ci, si);
+
+        // Variable blend kernel: generous at head, tight at tail
+        float segT = float(i) / max(float(segCount - 1), 1.0);
+        float k = avgRadius
+                * mix(0.55, 0.18, segT * segT * taperCurve)
+                * mix(1.2, 0.5, blendStiffness);
+
         float d = sdCircle(vFragPos - segPos, segR);
-        dBody = smin(dBody, d, blendK);
+        dBody = smin(dBody, d, k);
+    }
+
+    // Asymmetric head: slight forward-axis elongation driven by diet
+    if (uLodTier == 0) {
+        float diet = fetchFloat(ci, 36);
+        vec2 headPos = fetchSegPos(ci, 0);
+        float headR = fetchSegRadius(ci, 0);
+        vec2 fwd = fetchForwardAxis(ci);
+
+        // Elongation factor: 1.0 (herbivore) to 1.15 (carnivore)
+        float headElong = 1.0 + diet * 0.15;
+        // Compress distance along forward axis to create ellipse
+        vec2 toFrag = vFragPos - headPos;
+        float fwdDist = dot(toFrag, fwd);
+        vec2 squeezed = toFrag - fwd * fwdDist * (1.0 - 1.0 / headElong);
+        float dHeadEllipse = length(squeezed) - headR;
+
+        // Blend elongated head into body with generous kernel
+        float headK = avgRadius * 0.5 * mix(1.2, 0.5, blendStiffness);
+        dBody = smin(dBody, dHeadEllipse, headK);
     }
 
     // ── Prepare feature SDFs (populated in full LOD only) ──
