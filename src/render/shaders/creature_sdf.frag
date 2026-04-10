@@ -438,19 +438,28 @@ void main() {
     float energy = fetchFloat(ci, 35);
 
     vec3 baseCol = hsl2rgb(hue, sat, lit);
-    vec3 rimCol = hsl2rgb(hue - 0.03, sat * 1.1, lit - 0.18);
-    vec3 innerCol = hsl2rgb(hue + 0.04, sat * 0.7, lit + 0.16);
+    vec3 rimCol = hsl2rgb(hue - 0.03, sat * 1.1, lit - 0.24);
+    vec3 innerCol = hsl2rgb(hue + 0.06, sat * 0.7, lit + 0.22);
     vec3 energyCol = hsl2rgb(hue + 0.1, 1.0, 0.72);
 
-    float bodyAlpha = smoothstep(1.0, -1.0, dOrganism);
-    float rim = smoothstep(0.0, -avgRadius * 0.15, dOrganism)
-              * (1.0 - smoothstep(-avgRadius * 0.15, -avgRadius * 0.45, dOrganism));
-    float inner = smoothstep(-avgRadius * 0.05, -avgRadius * 0.5, dOrganism);
-    float outline = smoothstep(avgRadius * 0.06, avgRadius * 0.01, abs(dOrganism));
+    // ── Pixel-scale edge quality ──
+    float aa = 0.7;  // anti-alias half-width in pixels
+    float bodyAlpha = smoothstep(aa, -aa, dOrganism);
+
+    // Hybrid rim/inner: pixel floor with gentle radius scaling
+    float rimOuter = max(2.0, avgRadius * 0.08);
+    float rimInner = max(5.0, avgRadius * 0.25);
+    float rim = smoothstep(0.0, -rimOuter, dOrganism)
+              * (1.0 - smoothstep(-rimOuter, -rimInner, dOrganism));
+    float inner = smoothstep(-1.5, -max(8.0, avgRadius * 0.35), dOrganism);
+
+    // Constant-width outline (1.2px)
+    float outW = 1.2;
+    float outline = smoothstep(outW, outW * 0.15, abs(dOrganism));
 
     vec3 col = mix(baseCol, innerCol, inner * 0.55);
     col = mix(col, rimCol, rim * 0.5);
-    col += energyCol * energy * 0.12 * inner;
+    col += energyCol * energy * 0.20 * inner;
 
     // Per-segment damage visualization
     if (uLodTier == 0) {
@@ -499,13 +508,14 @@ void main() {
     if (uLodTier == 0) {
         vec2 hp = fetchSegPos(ci, 0);
         float headD = sdCircle(vFragPos - hp, fetchSegRadius(ci, 0));
-        float sss = smoothstep(0.0, -avgRadius * 0.6, headD)
-                  * smoothstep(-avgRadius * 0.6, 0.0, headD + avgRadius * 0.3);
-        col += hsl2rgb(hue + 0.08, 0.5, 0.9) * sss * 0.18 * (0.5 + energy * 0.5);
+        float sss = smoothstep(0.0, -avgRadius * 0.7, headD)
+                  * smoothstep(-avgRadius * 0.7, 0.0, headD + avgRadius * 0.35);
+        col += hsl2rgb(hue + 0.08, 0.5, 0.9) * sss * 0.25 * (0.5 + energy * 0.5);
     }
 
-    // Outline
-    col = mix(col, rimCol * 0.6, outline * 0.85);
+    // Outline: desaturated dark shadow edge
+    vec3 outlineCol = hsl2rgb(hue, sat * 0.4, lit * 0.25);
+    col = mix(col, outlineCol, outline * 0.85);
 
     // Mouth interior (full LOD only)
     if (uLodTier == 0) {
@@ -518,14 +528,14 @@ void main() {
         );
         col = mix(col, mouthCol, mouthMask * 0.92);
 
-        float lipEdge = smoothstep(1.0, 0.2, abs(dMouth)) * smoothstep(1.0, -1.0, dBody);
+        float lipEdge = smoothstep(1.2, 0.2, abs(dMouth)) * smoothstep(aa, -aa, dBody);
         col = mix(col, rimCol * 0.75, lipEdge * 0.5);
     }
 
     // Eyes (full LOD only)
     if (uLodTier == 0) {
         float aggro2 = fetchFloat(ci, 37);
-        float eyeAlpha = smoothstep(0.5, -0.5, dEyes);
+        float eyeAlpha = smoothstep(0.6, -0.6, dEyes);
         float eyeInner2 = smoothstep(0.0, -eyeR, dEyes);
         float pupilA = smoothstep(0.5, -0.5, dPupils);
         float hlA = smoothstep(0.3, -0.3, dHighlights);
@@ -539,9 +549,9 @@ void main() {
         col = mix(col, vec3(0.04, 0.05, 0.07), pupilA * 0.95);
         // Catchlight
         col = mix(col, vec3(1.0), hlA * 0.92);
-        // Eye outline
-        float eyeOutline = smoothstep(0.5, 0.1, abs(dEyes));
-        col = mix(col, rimCol * 0.5, eyeOutline * 0.7);
+        // Eye outline — pixel-scale
+        float eyeOutline = smoothstep(0.8, 0.1, abs(dEyes));
+        col = mix(col, outlineCol * 0.8, eyeOutline * 0.7);
     }
 
     if (bodyAlpha < 0.001) discard;
