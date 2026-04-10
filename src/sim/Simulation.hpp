@@ -78,6 +78,13 @@ struct MorphologyGenome {
     float spikes = 0.5f;
     float hue = 0.5f;
     float pattern = 0.5f;
+    float blendStiffness = 0.5f;
+    float tailWaveSpeed = 0.5f;
+    float tailWaveLength = 0.5f;
+    float tailTaper = 0.5f;
+    float finShape = 0.5f;
+    float saturation = 0.55f;
+    float lightness = 0.55f;
 };
 
 struct EcologyGenome {

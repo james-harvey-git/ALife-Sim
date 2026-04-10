@@ -1285,6 +1285,13 @@ Genome makeAncestorGenome(
     genome.morphology.spikes = 0.04f;
     genome.morphology.hue = 0.58f;
     genome.morphology.pattern = 0.48f;
+    genome.morphology.blendStiffness = 0.5f;
+    genome.morphology.tailWaveSpeed = 0.5f;
+    genome.morphology.tailWaveLength = 0.5f;
+    genome.morphology.tailTaper = 0.5f;
+    genome.morphology.finShape = 0.5f;
+    genome.morphology.saturation = 0.55f;
+    genome.morphology.lightness = 0.55f;
 
     genome.ecology.plantAffinity = 0.58f;
     genome.ecology.meatAffinity = 0.42f;
@@ -1418,6 +1425,13 @@ Genome mutateGenome(
     mutateScalar(rng, volatility, child.morphology.spikes);
     mutateScalar(rng, volatility, child.morphology.hue, 0.45f);
     mutateScalar(rng, volatility, child.morphology.pattern, 0.55f);
+    mutateScalar(rng, volatility, child.morphology.blendStiffness);
+    mutateScalar(rng, volatility, child.morphology.tailWaveSpeed);
+    mutateScalar(rng, volatility, child.morphology.tailWaveLength);
+    mutateScalar(rng, volatility, child.morphology.tailTaper);
+    mutateScalar(rng, volatility, child.morphology.finShape);
+    mutateScalar(rng, volatility, child.morphology.saturation);
+    mutateScalar(rng, volatility, child.morphology.lightness);
 
     mutateScalar(rng, volatility, child.ecology.plantAffinity);
     mutateScalar(rng, volatility, child.ecology.meatAffinity);
