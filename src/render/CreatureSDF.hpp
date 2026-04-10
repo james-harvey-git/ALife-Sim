@@ -37,7 +37,7 @@ private:
         float maxY;
     };
 
-    static constexpr int kDataStride = 56;
+    static constexpr int kDataStride = 64;
     static constexpr float kFullSdfThreshold = 30.0f;
     static constexpr float kSimpleSdfThreshold = 8.0f;
     static constexpr float kHysteresis = 2.0f;

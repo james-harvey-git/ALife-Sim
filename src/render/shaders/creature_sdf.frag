@@ -10,10 +10,10 @@ uniform int uDataOffset; // TBO creature index offset for this tier
 out vec4 fragColor;
 
 // ── Data fetch helpers ──
-// Each creature is 56 floats = 14 vec4 texels in the TBO.
+// Each creature is 64 floats = 16 vec4 texels in the TBO.
 
 vec4 fetchTexel(int creatureIdx, int texelIdx) {
-    return texelFetch(uCreatureData, creatureIdx * 14 + texelIdx);
+    return texelFetch(uCreatureData, creatureIdx * 16 + texelIdx);
 }
 
 vec2 fetchSegPos(int creatureIdx, int segIdx) {

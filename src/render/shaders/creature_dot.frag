@@ -9,7 +9,7 @@ uniform int uDataOffset;
 out vec4 fragColor;
 
 vec4 fetchTexel(int creatureIdx, int texelIdx) {
-    return texelFetch(uCreatureData, creatureIdx * 14 + texelIdx);
+    return texelFetch(uCreatureData, creatureIdx * 16 + texelIdx);
 }
 
 vec3 hsl2rgb(float h, float s, float l) {

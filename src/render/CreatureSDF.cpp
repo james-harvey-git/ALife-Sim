@@ -308,10 +308,6 @@ void CreatureSDF::packAndClassify(const Simulation& sim,
     const float worldScale = std::min(worldViewport.w / std::max(worldW, 1.0f),
                                       worldViewport.h / std::max(worldH, 1.0f))
                            * cameraZoom;
-    const float retinaScale = (worldViewport.w > 0.0f)
-        ? static_cast<float>(drawableWidth) / worldViewport.w
-        : 1.0f;
-
     const float screenW = static_cast<float>(drawableWidth);
     const float screenH = static_cast<float>(drawableHeight);
 
@@ -321,8 +317,8 @@ void CreatureSDF::packAndClassify(const Simulation& sim,
         float vpCenterX = worldViewport.x + worldViewport.w * 0.5f;
         float vpCenterY = worldViewport.y + worldViewport.h * 0.5f;
         return {
-            (vpCenterX + dx * worldScale) * retinaScale,
-            (vpCenterY + dy * worldScale) * retinaScale
+            vpCenterX + dx * worldScale,
+            vpCenterY + dy * worldScale
         };
     };
 
@@ -360,7 +356,7 @@ void CreatureSDF::packAndClassify(const Simulation& sim,
 
         for (int s = 0; s < kBodySegments; ++s) {
             cc.segScreen[s] = worldToScreen(c.bodyPoints[static_cast<std::size_t>(s)]);
-            cc.segRadiiScreen[s] = c.bodyRadii[static_cast<std::size_t>(s)] * worldScale * retinaScale;
+            cc.segRadiiScreen[s] = c.bodyRadii[static_cast<std::size_t>(s)] * worldScale;
 
             float r = cc.segRadiiScreen[s];
             minX = std::min(minX, cc.segScreen[s].x - r);
@@ -459,15 +455,18 @@ void CreatureSDF::packAndClassify(const Simulation& sim,
         float energyLevel = clamp01(c.energy / repThresh);
         float aggression = clamp01(c.genome.ecology.aggression * 0.68f + diet * 0.32f);
 
+        float armor = c.genome.morphology.armor;
+
         // [32] Hue
         d[32] = c.genome.morphology.hue;
 
-        // [33] Saturation: 0.46 + 0.32 * (armor*0.72 + aggression*0.28)
-        float armor = c.genome.morphology.armor;
-        d[33] = 0.46f + (0.78f - 0.46f) * (armor * 0.72f + aggression * 0.28f);
+        // [33] Saturation: genome-driven base with small dynamic offsets
+        float baseSat = 0.30f + 0.62f * c.genome.morphology.saturation;
+        d[33] = clamp01(baseSat + (armor * 0.08f + aggression * 0.06f - 0.07f));
 
-        // [34] Lightness: 0.56 + 0.20 * (plantAffinity*0.55 + energyLevel*0.45)
-        d[34] = 0.56f + (0.76f - 0.56f) * (plantAffinity * 0.55f + energyLevel * 0.45f);
+        // [34] Lightness: genome-driven base with energy offset
+        float baseLit = 0.32f + 0.40f * c.genome.morphology.lightness;
+        d[34] = clamp01(baseLit + (energyLevel * 0.10f - 0.05f));
 
         // [35] Energy level
         d[35] = energyLevel;
@@ -478,7 +477,7 @@ void CreatureSDF::packAndClassify(const Simulation& sim,
         // [37] Aggression (blended)
         d[37] = aggression;
 
-        // [38-51] Genome morphology traits (14 values)
+        // [38-51] Genome morphology traits (14 values — same layout as before)
         const auto& morph = c.genome.morphology;
         d[38] = morph.finArea;
         d[39] = morph.finPlacement;
@@ -488,14 +487,22 @@ void CreatureSDF::packAndClassify(const Simulation& sim,
         d[43] = morph.jawLength;
         d[44] = morph.jawArc;
         d[45] = morph.sensorRange;
-        d[46] = morph.sensorSpan;   // used for expressiveness
+        d[46] = morph.sensorSpan;
         d[47] = morph.spikes;
         d[48] = morph.pattern;
         d[49] = morph.bodyTaper;
         d[50] = morph.armor;
         d[51] = morph.coreSize;
 
-        // [52-55] Reserved (already zeroed by memset)
+        // [52-57] New visual quality floats
+        d[52] = morph.blendStiffness;
+        d[53] = morph.tailWaveSpeed;
+        d[54] = morph.tailWaveLength;
+        d[55] = morph.tailTaper;
+        d[56] = morph.finShape;
+        d[57] = morph.bodyTaper;  // taperCurve (same as bodyTaper, shader-accessible alias)
+
+        // [58-63] Reserved (already zeroed by memset)
 
         // Push instance AABB into the correct tier vector
         switch (cc.tier) {
