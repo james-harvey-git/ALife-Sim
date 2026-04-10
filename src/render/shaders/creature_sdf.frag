@@ -251,7 +251,7 @@ void main() {
         }
         dOrganism = smin(dOrganism, dTails, tailR * 0.4);
 
-        // ── Dorsal fin ──
+        // ── Dorsal fin — curved paddles with shape gene ──
         if (finArea > 0.1) {
             int finSeg = 1 + int(finPlacement * 3.0);
             finSeg = clamp(finSeg, 1, 4);
@@ -262,15 +262,34 @@ void main() {
             vec2 finAxis = (finDirLen > 0.001) ? finDir / finDirLen : vec2(1.0, 0.0);
             vec2 finPerp = vec2(-finAxis.y, finAxis.x);
 
-            float flap = sin(gaitPhase * 1.36) * (0.08 + finArea * 0.38) * (0.25 + thrustDrive * 0.75);
+            float finShapeGene = fetchFinShape(ci);
+            float flap = sin(gaitPhase * 1.36) * (0.12 + finArea * 0.48)
+                       * (0.25 + thrustDrive * 0.75);
 
             for (int side = 0; side < 2; side++) {
                 float sSign = (side == 0) ? -1.0 : 1.0;
                 vec2 finBase = finPos + finPerp * sSign * finR * 0.7;
-                vec2 finTip = finBase + finPerp * sSign * finR * (0.6 + finArea * 0.8)
-                            + finAxis * flap * finR * sSign;
-                float fw = finR * 0.15 * finArea;
-                dOrganism = smin(dOrganism, sdTaperedCapsule(vFragPos, finBase, finTip, fw, fw * 0.3), fw * 1.8);
+
+                // Fin length: larger than before
+                float fLength = finR * (0.8 + finArea * 1.4);
+                // Midpoint bows backward under thrust for paddle shape
+                vec2 finMid = finBase
+                    + finPerp * sSign * fLength * 0.55
+                    + finAxis * (flap * finR * sSign - fLength * 0.12);
+                vec2 finTip = finBase
+                    + finPerp * sSign * fLength
+                    + finAxis * flap * finR * sSign * 0.6;
+
+                // Width varies by finShape gene: blade (narrow) to fan (broad)
+                float baseW = finR * 0.15 * finArea;
+                float midW = baseW * (0.6 + finShapeGene * 1.4);  // paddle bulge at mid
+                float tipW = baseW * 0.25;
+
+                float d1 = sdTaperedCapsule(vFragPos, finBase, finMid, baseW, midW);
+                float d2 = sdTaperedCapsule(vFragPos, finMid, finTip, midW, tipW);
+                float dFin = smin(d1, d2, midW * 0.8);
+                // Generous blend where fin meets body
+                dOrganism = smin(dOrganism, dFin, baseW * 2.4);
             }
         }
 
