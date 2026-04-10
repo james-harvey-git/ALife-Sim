@@ -194,7 +194,7 @@ void main() {
         float spikes = fetchFloat(ci, 47);
         float sensorExpr = fetchFloat(ci, 46);
 
-        // ── Tail filaments ──
+        // ── Tail filaments — 3-segment Bezier with spatial wave ──
         int tailCount = 1 + int(tailFork * 2.0 + tailFlex * 0.5);
         tailCount = clamp(tailCount, 1, 4);
 
@@ -203,27 +203,51 @@ void main() {
         vec2 tailDir = tailSeg - fetchSegPos(ci, 4);
         float tailDirLen = length(tailDir);
         vec2 tailAxis = (tailDirLen > 0.001) ? tailDir / tailDirLen : vec2(1.0, 0.0);
+        vec2 tailPerp = vec2(-tailAxis.y, tailAxis.x);
+
+        float waveSpeed = fetchTailWaveSpeed(ci);
+        float waveLen = fetchTailWaveLength(ci);
+        float tailTaperGene = fetchTailTaper(ci);
+
+        // Map genome values to usable ranges
+        float waveSpeedMul = 0.6 + waveSpeed * 1.9;   // [0.6, 2.5]
+        float waveLenMul = 1.2 + waveLen * 3.0;        // [1.2, 4.2] phase offset per segment
+        float amplitude = (0.14 + tailFlex * 0.42) * (0.28 + thrustDrive * 0.72);
 
         float dTails = 1e9;
         for (int t = 0; t < 4; t++) {
             if (t >= tailCount) break;
             float spread = (float(t) - float(tailCount - 1) * 0.5) * 0.35;
             vec2 root = tailSeg + tailAxis * tailR * 0.6
-                      + vec2(-tailAxis.y, tailAxis.x) * spread * tailR;
-
-            float wave = sin(gaitPhase * 1.18 + float(t) * 1.3)
-                       * (0.14 + tailFlex * 0.42) * (0.28 + thrustDrive * 0.72);
-            vec2 perpAxis = vec2(-tailAxis.y, tailAxis.x);
+                      + tailPerp * spread * tailR;
 
             float fLen = tailLength * avgRadius * 2.5;
-            vec2 mid = root + tailAxis * fLen * 0.5 + perpAxis * wave * fLen * 0.3;
-            vec2 tip = root + tailAxis * fLen + perpAxis * wave * fLen * 0.15;
 
+            // Spatial wave — phase progresses along length
+            float basePhase = gaitPhase * waveSpeedMul * 1.18 + float(t) * 1.3;
+            float w1 = sin(basePhase) * amplitude;
+            float w2 = sin(basePhase + waveLenMul * 0.33) * amplitude * 0.8;
+            float w3 = sin(basePhase + waveLenMul * 0.66) * amplitude * 0.5;
+
+            // 4 control points for S-curve
+            vec2 P0 = root;
+            vec2 P1 = root + tailAxis * fLen * 0.33 + tailPerp * w1 * fLen * 0.35;
+            vec2 P2 = root + tailAxis * fLen * 0.66 + tailPerp * w2 * fLen * 0.25;
+            vec2 P3 = root + tailAxis * fLen         + tailPerp * w3 * fLen * 0.10;
+
+            // Tapered widths — root to tip narrowing
             float rootW = tailR * 0.28;
-            float tipW = tailR * 0.06;
-            float s1 = sdTaperedCapsule(vFragPos, root, mid, rootW, rootW * 0.5);
-            float s2 = sdTaperedCapsule(vFragPos, mid, tip, rootW * 0.5, tipW);
-            dTails = min(dTails, smin(s1, s2, rootW * 0.6));
+            float tipW = tailR * mix(0.10, 0.03, tailTaperGene);
+
+            // 3 tapered capsule segments blended smoothly
+            float w01 = mix(rootW, rootW * 0.6, 0.5);
+            float w12 = mix(rootW * 0.6, tipW * 2.0, 0.5);
+            float s1 = sdTaperedCapsule(vFragPos, P0, P1, rootW, w01);
+            float s2 = sdTaperedCapsule(vFragPos, P1, P2, w01, w12);
+            float s3 = sdTaperedCapsule(vFragPos, P2, P3, w12, tipW);
+            float dFil = smin(s1, s2, rootW * 0.6);
+            dFil = smin(dFil, s3, rootW * 0.4);
+            dTails = min(dTails, dFil);
         }
         dOrganism = smin(dOrganism, dTails, tailR * 0.4);
 
