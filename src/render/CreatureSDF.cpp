@@ -381,7 +381,7 @@ void CreatureSDF::packAndClassify(const Simulation& sim,
             avgScreenRadius += cc.segRadiiScreen[s];
         }
         avgScreenRadius /= static_cast<float>(kBodySegments);
-        float appendageMargin = avgScreenRadius * 1.8f;
+        float appendageMargin = avgScreenRadius * 2.8f;
         cc.aabb = {minX - appendageMargin, minY - appendageMargin,
                    maxX + appendageMargin, maxY + appendageMargin};
 

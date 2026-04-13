@@ -1379,6 +1379,62 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     // Restore batched geometry VAO after SDF rendering
     glBindVertexArray(renderer_->colorVao);
     glUseProgram(renderer_->colorProgram);
+
+    // Selection debug overlays (sensor arc, bite arc, collision ring)
+    {
+        const std::uint64_t selectedId = simulation.selectedCreature();
+        if (selectedId != 0) {
+            for (const Creature& creature : simulation.creatures()) {
+                if (!creature.alive || creature.id != selectedId) continue;
+
+                // 'scale' already computed at top of renderFrame from worldScale(simulation)
+                const SDL_FPoint head = worldToScreen(creature.bodyPoints[0], simulation);
+                const Vec2 forwardVector {std::cos(creature.angle), std::sin(creature.angle)};
+
+                auto wrappedPointToScreen = [&](Vec2 point) -> SDL_FPoint {
+                    return worldToScreen(point, simulation);
+                };
+
+                // Sensor arc
+                const float sensorHalf = creature.traits.sensorSpan * 0.5f;
+                const Vec2 sensorEdgeA {
+                    std::cos(creature.angle - sensorHalf),
+                    std::sin(creature.angle - sensorHalf)
+                };
+                const Vec2 sensorEdgeB {
+                    std::cos(creature.angle + sensorHalf),
+                    std::sin(creature.angle + sensorHalf)
+                };
+                drawLine(renderer_, head, wrappedPointToScreen(creature.bodyPoints[0] + sensorEdgeA * creature.traits.sensorRange), {138, 193, 255, 90});
+                drawLine(renderer_, head, wrappedPointToScreen(creature.bodyPoints[0] + sensorEdgeB * creature.traits.sensorRange), {138, 193, 255, 90});
+                drawLine(renderer_, head, wrappedPointToScreen(creature.bodyPoints[0] + forwardVector * creature.traits.sensorRange), {138, 193, 255, 46});
+
+                // Bite arc
+                const Vec2 biteEdgeA {
+                    std::cos(creature.angle - creature.traits.biteArc),
+                    std::sin(creature.angle - creature.traits.biteArc)
+                };
+                const Vec2 biteEdgeB {
+                    std::cos(creature.angle + creature.traits.biteArc),
+                    std::sin(creature.angle + creature.traits.biteArc)
+                };
+                drawLine(renderer_, head, wrappedPointToScreen(creature.bodyPoints[0] + biteEdgeA * creature.traits.biteReach), {255, 210, 160, 110});
+                drawLine(renderer_, head, wrappedPointToScreen(creature.bodyPoints[0] + biteEdgeB * creature.traits.biteReach), {255, 210, 160, 110});
+
+                // Collision ring
+                const float ringRadius = creature.traits.collisionRadius * scale * 0.7f;
+                fillEllipse(renderer_, head.x, head.y, ringRadius, ringRadius, {242, 245, 247, 36});
+                drawLine(
+                    renderer_,
+                    head,
+                    {head.x + forwardVector.x * ringRadius, head.y + forwardVector.y * ringRadius},
+                    {243, 244, 246, 180}
+                );
+                break;
+            }
+        }
+    }
+
     if (showBrainOverlay_) {
         drawBrainOverlay(info);
     }

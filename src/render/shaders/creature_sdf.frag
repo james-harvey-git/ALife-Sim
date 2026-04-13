@@ -235,7 +235,7 @@ void main() {
             vec2 root = tailSeg + tailAxis * tailR * 0.6
                       + tailPerp * spread * tailR;
 
-            float fLen = tailLength * avgRadius * 2.5;
+            float fLen = tailLength * avgRadius * 3.5;
 
             // Spatial wave — phase progresses along length
             float basePhase = gaitPhase * waveSpeedMul * 1.18 + float(t) * 1.3;
@@ -249,9 +249,10 @@ void main() {
             vec2 P2 = root + tailAxis * fLen * 0.66 + tailPerp * w2 * fLen * 0.25;
             vec2 P3 = root + tailAxis * fLen         + tailPerp * w3 * fLen * 0.10;
 
-            // Tapered widths — root to tip narrowing
-            float rootW = tailR * 0.28;
-            float tipW = tailR * mix(0.10, 0.03, tailTaperGene);
+            // Tapered widths — scale off avgRadius for visibility
+            // (tailR alone is too small: ~5% of head → sub-pixel widths)
+            float rootW = avgRadius * (0.10 + tailLength * 0.12);
+            float tipW = avgRadius * mix(0.04, 0.012, tailTaperGene);
 
             // 3 tapered capsule segments blended smoothly
             float w01 = mix(rootW, rootW * 0.6, 0.5);
@@ -263,7 +264,9 @@ void main() {
             dFil = smin(dFil, s3, rootW * 0.4);
             dTails = min(dTails, dFil);
         }
-        dOrganism = smin(dOrganism, dTails, tailR * 0.4);
+        // Generous blend where tail meets body (was tailR*0.4 → ~1.7px, invisible seam)
+        float tailBlendW = avgRadius * (0.10 + tailLength * 0.12);
+        dOrganism = smin(dOrganism, dTails, tailBlendW * 2.0);
 
         // ── Dorsal fin — curved paddles with shape gene ──
         if (finArea > 0.1) {
@@ -295,15 +298,16 @@ void main() {
                     + finAxis * flap * finR * sSign * 0.6;
 
                 // Width varies by finShape gene: blade (narrow) to fan (broad)
-                float baseW = finR * 0.15 * finArea;
+                // Scale off avgRadius for visibility (finR * 0.15 * finArea was sub-pixel)
+                float baseW = avgRadius * (0.06 + finArea * 0.14);
                 float midW = baseW * (0.6 + finShapeGene * 1.4);  // paddle bulge at mid
-                float tipW = baseW * 0.25;
+                float tipW = baseW * 0.3;
 
                 float d1 = sdTaperedCapsule(vFragPos, finBase, finMid, baseW, midW);
                 float d2 = sdTaperedCapsule(vFragPos, finMid, finTip, midW, tipW);
                 float dFin = smin(d1, d2, midW * 0.8);
                 // Generous blend where fin meets body
-                dOrganism = smin(dOrganism, dFin, baseW * 2.4);
+                dOrganism = smin(dOrganism, dFin, baseW * 3.0);
             }
         }
 
@@ -343,7 +347,7 @@ void main() {
                          + headPerp * wiggle * headR * 0.5;
                 }
 
-                float ww = headR * 0.05;
+                float ww = avgRadius * 0.07;
                 dOrganism = smin(dOrganism,
                     sdTaperedCapsule(vFragPos, wBase, wTip, ww, ww * 0.08),
                     ww * 1.5);
@@ -364,8 +368,9 @@ void main() {
                 vec2 sAxis = (sDirLen > 0.001) ? sDir / sDirLen : vec2(1.0, 0.0);
 
                 // Ridge protrudes from dorsal side, angled slightly backward
-                float ridgeLen = sR * (0.05 + spikes * 0.15);
-                float ridgeW = sR * 0.14;
+                // Scale off avgRadius for consistent visibility
+                float ridgeLen = avgRadius * (0.06 + spikes * 0.20);
+                float ridgeW = avgRadius * 0.10;
 
                 vec2 ridgeBase = sPos + dorsalDir * sR * 0.8;
                 vec2 ridgeTip = ridgeBase + dorsalDir * ridgeLen
