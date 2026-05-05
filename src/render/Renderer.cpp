@@ -1,8 +1,15 @@
 #include "render/Renderer.hpp"
 
+#if defined(__APPLE__)
+#include <OpenGL/gl3.h>
+#else
+#include <SDL2/SDL_opengl.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
@@ -11,16 +18,56 @@
 
 namespace alife {
 
+struct RendererState {
+    SDL_GLContext glContext = nullptr;
+    GLuint colorProgram = 0;
+    GLuint colorVao = 0;
+    GLuint colorVbo = 0;
+    GLuint colorEbo = 0;
+    GLint colorViewportLocation = -1;
+    GLuint textProgram = 0;
+    GLuint textVao = 0;
+    GLuint textVbo = 0;
+    GLuint textEbo = 0;
+    GLint textViewportLocation = -1;
+    GLint textSamplerLocation = -1;
+    int drawableWidth = 0;
+    int drawableHeight = 0;
+
+    struct ColorVertex {
+        float x;
+        float y;
+        float r;
+        float g;
+        float b;
+        float a;
+    };
+
+    struct TextVertex {
+        float x;
+        float y;
+        float u;
+        float v;
+        float r;
+        float g;
+        float b;
+        float a;
+    };
+
+    std::vector<ColorVertex> colorVertices;
+    std::vector<std::uint32_t> colorIndices;
+};
+
 namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
+constexpr float kMinCameraZoom = 1.0f;
+constexpr float kMaxCameraZoom = 14.0f;
+constexpr float kDefaultCameraZoom = 6.5f;
+constexpr float kLineWidth = 1.2f;
 
 float clamp01(float value) {
     return std::clamp(value, 0.0f, 1.0f);
-}
-
-float lerp(float a, float b, float t) {
-    return a + (b - a) * t;
 }
 
 Vec2 operator+(const Vec2& lhs, const Vec2& rhs) {
@@ -35,17 +82,46 @@ Vec2 operator*(const Vec2& value, float scale) {
     return {value.x * scale, value.y * scale};
 }
 
+Vec2 operator/(const Vec2& value, float scale) {
+    return {value.x / scale, value.y / scale};
+}
+
 float lengthSquared(const Vec2& value) {
     return value.x * value.x + value.y * value.y;
 }
 
-Vec2 normalize(const Vec2& value) {
-    const float lenSq = lengthSquared(value);
-    if (lenSq < 1e-6f) {
-        return {1.0f, 0.0f};
+float length(const Vec2& value) {
+    return std::sqrt(lengthSquared(value));
+}
+
+float wrapAxis(float value, float extent) {
+    if (extent <= 0.0f) {
+        return value;
     }
-    const float invLen = 1.0f / std::sqrt(lenSq);
-    return value * invLen;
+    value = std::fmod(value, extent);
+    if (value < 0.0f) {
+        value += extent;
+    }
+    return value;
+}
+
+Vec2 wrapWorldPoint(const Vec2& point, float worldWidth, float worldHeight) {
+    return {wrapAxis(point.x, worldWidth), wrapAxis(point.y, worldHeight)};
+}
+
+float unwrapAxisNearReference(float value, float reference, float extent) {
+    if (extent <= 0.0f) {
+        return value;
+    }
+    const float wraps = std::round((reference - value) / extent);
+    return value + wraps * extent;
+}
+
+Vec2 unwrapPointNearReference(const Vec2& point, const Vec2& reference, float worldWidth, float worldHeight) {
+    return {
+        unwrapAxisNearReference(point.x, reference.x, worldWidth),
+        unwrapAxisNearReference(point.y, reference.y, worldHeight)
+    };
 }
 
 std::uint8_t toByte(float value) {
@@ -112,64 +188,462 @@ SDL_Color tint(SDL_Color color, float brightnessScale, std::uint8_t alpha = 255)
     return {scale(color.r), scale(color.g), scale(color.b), alpha};
 }
 
-void setColor(SDL_Renderer* renderer, SDL_Color color) {
-    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+bool pointInRect(int x, int y, const SDL_FRect& rect) {
+    const float px = static_cast<float>(x);
+    const float py = static_cast<float>(y);
+    return px >= rect.x && px <= rect.x + rect.w && py >= rect.y && py <= rect.y + rect.h;
 }
 
-void fillRect(SDL_Renderer* renderer, const SDL_FRect& rect, SDL_Color color) {
-    setColor(renderer, color);
-    SDL_RenderFillRectF(renderer, &rect);
+float toFloatChannel(std::uint8_t channel) {
+    return static_cast<float>(channel) / 255.0f;
 }
 
-void drawTexturedFan(
-    SDL_Renderer* renderer,
-    const std::vector<SDL_Vertex>& vertices,
-    const std::vector<int>& indices
-) {
-    SDL_RenderGeometry(
-        renderer,
-        nullptr,
-        vertices.data(),
-        static_cast<int>(vertices.size()),
-        indices.data(),
-        static_cast<int>(indices.size())
+RendererState::ColorVertex makeColorVertex(const SDL_FPoint& point, SDL_Color color) {
+    return {
+        point.x,
+        point.y,
+        toFloatChannel(color.r),
+        toFloatChannel(color.g),
+        toFloatChannel(color.b),
+        toFloatChannel(color.a)
+    };
+}
+
+GLuint compileShader(GLenum type, const char* source) {
+    const GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+
+    GLint success = GL_FALSE;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+    if (success == GL_TRUE) {
+        return shader;
+    }
+
+    GLint logLength = 0;
+    glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &logLength);
+    std::string log(static_cast<std::size_t>(std::max(0, logLength)), '\0');
+    if (logLength > 0) {
+        glGetShaderInfoLog(shader, logLength, nullptr, log.data());
+    }
+    SDL_Log("OpenGL shader compile failed: %s", log.c_str());
+    glDeleteShader(shader);
+    return 0;
+}
+
+GLuint linkProgram(const char* vertexSource, const char* fragmentSource) {
+    const GLuint vertexShader = compileShader(GL_VERTEX_SHADER, vertexSource);
+    const GLuint fragmentShader = compileShader(GL_FRAGMENT_SHADER, fragmentSource);
+    if (vertexShader == 0 || fragmentShader == 0) {
+        if (vertexShader != 0) {
+            glDeleteShader(vertexShader);
+        }
+        if (fragmentShader != 0) {
+            glDeleteShader(fragmentShader);
+        }
+        return 0;
+    }
+
+    const GLuint program = glCreateProgram();
+    glAttachShader(program, vertexShader);
+    glAttachShader(program, fragmentShader);
+    glLinkProgram(program);
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+
+    GLint success = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &success);
+    if (success == GL_TRUE) {
+        return program;
+    }
+
+    GLint logLength = 0;
+    glGetProgramiv(program, GL_INFO_LOG_LENGTH, &logLength);
+    std::string log(static_cast<std::size_t>(std::max(0, logLength)), '\0');
+    if (logLength > 0) {
+        glGetProgramInfoLog(program, logLength, nullptr, log.data());
+    }
+    SDL_Log("OpenGL program link failed: %s", log.c_str());
+    glDeleteProgram(program);
+    return 0;
+}
+
+bool initializeBackend(RendererState* renderer) {
+    constexpr const char* kColorVertexShader = R"glsl(
+        #version 410
+        in vec2 aPosition;
+        in vec4 aColor;
+        uniform vec2 uViewport;
+        out vec4 vColor;
+
+        void main() {
+            vec2 ndc = vec2(
+                (aPosition.x / uViewport.x) * 2.0 - 1.0,
+                1.0 - (aPosition.y / uViewport.y) * 2.0
+            );
+            gl_Position = vec4(ndc, 0.0, 1.0);
+            vColor = aColor;
+        }
+    )glsl";
+
+    constexpr const char* kColorFragmentShader = R"glsl(
+        #version 410
+        in vec4 vColor;
+        out vec4 fragColor;
+
+        void main() {
+            fragColor = vColor;
+        }
+    )glsl";
+
+    constexpr const char* kTextVertexShader = R"glsl(
+        #version 410
+        in vec2 aPosition;
+        in vec2 aTexCoord;
+        in vec4 aColor;
+        uniform vec2 uViewport;
+        out vec2 vTexCoord;
+        out vec4 vColor;
+
+        void main() {
+            vec2 ndc = vec2(
+                (aPosition.x / uViewport.x) * 2.0 - 1.0,
+                1.0 - (aPosition.y / uViewport.y) * 2.0
+            );
+            gl_Position = vec4(ndc, 0.0, 1.0);
+            vTexCoord = aTexCoord;
+            vColor = aColor;
+        }
+    )glsl";
+
+    constexpr const char* kTextFragmentShader = R"glsl(
+        #version 410
+        uniform sampler2D uTexture;
+        in vec2 vTexCoord;
+        in vec4 vColor;
+        out vec4 fragColor;
+
+        void main() {
+            fragColor = texture(uTexture, vTexCoord) * vColor;
+        }
+    )glsl";
+
+    renderer->colorProgram = linkProgram(kColorVertexShader, kColorFragmentShader);
+    renderer->textProgram = linkProgram(kTextVertexShader, kTextFragmentShader);
+    if (renderer->colorProgram == 0 || renderer->textProgram == 0) {
+        return false;
+    }
+
+    renderer->colorViewportLocation = glGetUniformLocation(renderer->colorProgram, "uViewport");
+    renderer->textViewportLocation = glGetUniformLocation(renderer->textProgram, "uViewport");
+    renderer->textSamplerLocation = glGetUniformLocation(renderer->textProgram, "uTexture");
+    const GLint colorPositionLocation = glGetAttribLocation(renderer->colorProgram, "aPosition");
+    const GLint colorVertexColorLocation = glGetAttribLocation(renderer->colorProgram, "aColor");
+    const GLint textPositionLocation = glGetAttribLocation(renderer->textProgram, "aPosition");
+    const GLint textUvLocation = glGetAttribLocation(renderer->textProgram, "aTexCoord");
+    const GLint textVertexColorLocation = glGetAttribLocation(renderer->textProgram, "aColor");
+    if (colorPositionLocation < 0 || colorVertexColorLocation < 0 || textPositionLocation < 0 || textUvLocation < 0
+        || textVertexColorLocation < 0) {
+        SDL_Log("OpenGL attribute lookup failed.");
+        return false;
+    }
+
+    glGenVertexArrays(1, &renderer->colorVao);
+    glGenBuffers(1, &renderer->colorVbo);
+    glGenBuffers(1, &renderer->colorEbo);
+    glBindVertexArray(renderer->colorVao);
+    glBindBuffer(GL_ARRAY_BUFFER, renderer->colorVbo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, renderer->colorEbo);
+    glEnableVertexAttribArray(static_cast<GLuint>(colorPositionLocation));
+    glVertexAttribPointer(
+        static_cast<GLuint>(colorPositionLocation),
+        2,
+        GL_FLOAT,
+        GL_FALSE,
+        sizeof(RendererState::ColorVertex),
+        reinterpret_cast<void*>(offsetof(RendererState::ColorVertex, x))
     );
+    glEnableVertexAttribArray(static_cast<GLuint>(colorVertexColorLocation));
+    glVertexAttribPointer(
+        static_cast<GLuint>(colorVertexColorLocation),
+        4,
+        GL_FLOAT,
+        GL_FALSE,
+        sizeof(RendererState::ColorVertex),
+        reinterpret_cast<void*>(offsetof(RendererState::ColorVertex, r))
+    );
+
+    glGenVertexArrays(1, &renderer->textVao);
+    glGenBuffers(1, &renderer->textVbo);
+    glGenBuffers(1, &renderer->textEbo);
+    glBindVertexArray(renderer->textVao);
+    glBindBuffer(GL_ARRAY_BUFFER, renderer->textVbo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, renderer->textEbo);
+    glEnableVertexAttribArray(static_cast<GLuint>(textPositionLocation));
+    glVertexAttribPointer(
+        static_cast<GLuint>(textPositionLocation),
+        2,
+        GL_FLOAT,
+        GL_FALSE,
+        sizeof(RendererState::TextVertex),
+        reinterpret_cast<void*>(offsetof(RendererState::TextVertex, x))
+    );
+    glEnableVertexAttribArray(static_cast<GLuint>(textUvLocation));
+    glVertexAttribPointer(
+        static_cast<GLuint>(textUvLocation),
+        2,
+        GL_FLOAT,
+        GL_FALSE,
+        sizeof(RendererState::TextVertex),
+        reinterpret_cast<void*>(offsetof(RendererState::TextVertex, u))
+    );
+    glEnableVertexAttribArray(static_cast<GLuint>(textVertexColorLocation));
+    glVertexAttribPointer(
+        static_cast<GLuint>(textVertexColorLocation),
+        4,
+        GL_FLOAT,
+        GL_FALSE,
+        sizeof(RendererState::TextVertex),
+        reinterpret_cast<void*>(offsetof(RendererState::TextVertex, r))
+    );
+
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+    return true;
 }
 
-void fillEllipse(SDL_Renderer* renderer, float cx, float cy, float rx, float ry, SDL_Color color) {
+void destroyBackend(RendererState* renderer) {
+    if (renderer == nullptr) {
+        return;
+    }
+
+    if (renderer->colorProgram != 0) {
+        glDeleteProgram(renderer->colorProgram);
+        renderer->colorProgram = 0;
+    }
+    if (renderer->textProgram != 0) {
+        glDeleteProgram(renderer->textProgram);
+        renderer->textProgram = 0;
+    }
+    if (renderer->colorVbo != 0) {
+        glDeleteBuffers(1, &renderer->colorVbo);
+        renderer->colorVbo = 0;
+    }
+    if (renderer->colorEbo != 0) {
+        glDeleteBuffers(1, &renderer->colorEbo);
+        renderer->colorEbo = 0;
+    }
+    if (renderer->colorVao != 0) {
+        glDeleteVertexArrays(1, &renderer->colorVao);
+        renderer->colorVao = 0;
+    }
+    if (renderer->textVbo != 0) {
+        glDeleteBuffers(1, &renderer->textVbo);
+        renderer->textVbo = 0;
+    }
+    if (renderer->textEbo != 0) {
+        glDeleteBuffers(1, &renderer->textEbo);
+        renderer->textEbo = 0;
+    }
+    if (renderer->textVao != 0) {
+        glDeleteVertexArrays(1, &renderer->textVao);
+        renderer->textVao = 0;
+    }
+}
+
+void beginFrame(RendererState* renderer, SDL_Window* window) {
+    SDL_GL_MakeCurrent(window, renderer->glContext);
+    SDL_GL_GetDrawableSize(window, &renderer->drawableWidth, &renderer->drawableHeight);
+    glViewport(0, 0, renderer->drawableWidth, renderer->drawableHeight);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_SCISSOR_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glClearColor(11.0f / 255.0f, 14.0f / 255.0f, 20.0f / 255.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    renderer->colorVertices.clear();
+    renderer->colorIndices.clear();
+}
+
+void flushColored(RendererState* renderer) {
+    if (renderer == nullptr || renderer->colorIndices.empty()) {
+        return;
+    }
+
+    glUseProgram(renderer->colorProgram);
+    glUniform2f(renderer->colorViewportLocation, static_cast<float>(renderer->drawableWidth), static_cast<float>(renderer->drawableHeight));
+    glBindVertexArray(renderer->colorVao);
+    glBindBuffer(GL_ARRAY_BUFFER, renderer->colorVbo);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(renderer->colorVertices.size() * sizeof(RendererState::ColorVertex)),
+        renderer->colorVertices.data(),
+        GL_DYNAMIC_DRAW
+    );
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, renderer->colorEbo);
+    glBufferData(
+        GL_ELEMENT_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(renderer->colorIndices.size() * sizeof(std::uint32_t)),
+        renderer->colorIndices.data(),
+        GL_DYNAMIC_DRAW
+    );
+    glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(renderer->colorIndices.size()), GL_UNSIGNED_INT, nullptr);
+    glBindVertexArray(0);
+    renderer->colorVertices.clear();
+    renderer->colorIndices.clear();
+}
+
+void setClipRect(RendererState* renderer, const SDL_Rect* rect) {
+    flushColored(renderer);
+    if (rect == nullptr) {
+        glDisable(GL_SCISSOR_TEST);
+        return;
+    }
+
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(rect->x, renderer->drawableHeight - (rect->y + rect->h), rect->w, rect->h);
+}
+
+void appendColoredGeometry(
+    RendererState* renderer,
+    const std::vector<SDL_FPoint>& vertices,
+    const std::vector<std::uint32_t>& indices,
+    SDL_Color color
+) {
+    if (renderer == nullptr || vertices.empty() || indices.empty()) {
+        return;
+    }
+
+    const std::uint32_t baseIndex = static_cast<std::uint32_t>(renderer->colorVertices.size());
+    renderer->colorVertices.reserve(renderer->colorVertices.size() + vertices.size());
+    renderer->colorIndices.reserve(renderer->colorIndices.size() + indices.size());
+    for (const SDL_FPoint& point : vertices) {
+        renderer->colorVertices.push_back(makeColorVertex(point, color));
+    }
+    for (std::uint32_t index : indices) {
+        renderer->colorIndices.push_back(baseIndex + index);
+    }
+}
+
+void fillRect(RendererState* renderer, const SDL_FRect& rect, SDL_Color color) {
+    const std::vector<SDL_FPoint> vertices {
+        {rect.x, rect.y},
+        {rect.x + rect.w, rect.y},
+        {rect.x + rect.w, rect.y + rect.h},
+        {rect.x, rect.y + rect.h}
+    };
+    const std::vector<std::uint32_t> indices {0, 1, 2, 0, 2, 3};
+    appendColoredGeometry(renderer, vertices, indices, color);
+}
+
+void fillEllipse(RendererState* renderer, float cx, float cy, float rx, float ry, SDL_Color color) {
     constexpr int kSegments = 28;
-    std::vector<SDL_Vertex> vertices;
-    std::vector<int> indices;
+    std::vector<SDL_FPoint> vertices;
+    std::vector<std::uint32_t> indices;
     vertices.reserve(kSegments + 2);
     indices.reserve(kSegments * 3);
 
-    vertices.push_back({{cx, cy}, color, {0.0f, 0.0f}});
+    vertices.push_back({cx, cy});
     for (int index = 0; index <= kSegments; ++index) {
         const float angle = static_cast<float>(index) / static_cast<float>(kSegments) * kPi * 2.0f;
-        vertices.push_back({{cx + std::cos(angle) * rx, cy + std::sin(angle) * ry}, color, {0.0f, 0.0f}});
+        vertices.push_back({cx + std::cos(angle) * rx, cy + std::sin(angle) * ry});
         if (index > 0) {
             indices.push_back(0);
-            indices.push_back(index);
-            indices.push_back(index + 1);
+            indices.push_back(static_cast<std::uint32_t>(index));
+            indices.push_back(static_cast<std::uint32_t>(index + 1));
         }
     }
 
-    drawTexturedFan(renderer, vertices, indices);
+    appendColoredGeometry(renderer, vertices, indices, color);
 }
 
-void fillTriangle(SDL_Renderer* renderer, SDL_FPoint a, SDL_FPoint b, SDL_FPoint c, SDL_Color color) {
-    const std::array<SDL_Vertex, 3> vertices {{
-        {a, color, {0.0f, 0.0f}},
-        {b, color, {0.0f, 0.0f}},
-        {c, color, {0.0f, 0.0f}}
+void drawLine(RendererState* renderer, SDL_FPoint a, SDL_FPoint b, SDL_Color color) {
+    Vec2 delta {b.x - a.x, b.y - a.y};
+    const float deltaLength = length(delta);
+    if (deltaLength < 1e-4f) {
+        return;
+    }
+
+    const Vec2 tangent = delta / deltaLength;
+    const Vec2 normal {-tangent.y, tangent.x};
+    const Vec2 offset = normal * (kLineWidth * 0.5f);
+    const std::vector<SDL_FPoint> vertices {
+        {a.x + offset.x, a.y + offset.y},
+        {a.x - offset.x, a.y - offset.y},
+        {b.x - offset.x, b.y - offset.y},
+        {b.x + offset.x, b.y + offset.y}
+    };
+    const std::vector<std::uint32_t> indices {0, 1, 2, 0, 2, 3};
+    appendColoredGeometry(renderer, vertices, indices, color);
+}
+
+void renderLabel(RendererState* renderer, TTF_Font* font, float x, float y, const std::string& text, SDL_Color color) {
+    if (renderer == nullptr || font == nullptr || text.empty()) {
+        return;
+    }
+
+    flushColored(renderer);
+
+    SDL_Surface* surface = TTF_RenderUTF8_Blended(font, text.c_str(), color);
+    if (surface == nullptr) {
+        return;
+    }
+
+    SDL_Surface* rgbaSurface = SDL_ConvertSurfaceFormat(surface, SDL_PIXELFORMAT_RGBA32, 0);
+    SDL_FreeSurface(surface);
+    if (rgbaSurface == nullptr) {
+        return;
+    }
+
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        GL_RGBA,
+        rgbaSurface->w,
+        rgbaSurface->h,
+        0,
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        rgbaSurface->pixels
+    );
+
+    const std::array<RendererState::TextVertex, 4> vertices {{
+        {x, y, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+        {x + static_cast<float>(rgbaSurface->w), y, 1.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+        {x + static_cast<float>(rgbaSurface->w), y + static_cast<float>(rgbaSurface->h), 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+        {x, y + static_cast<float>(rgbaSurface->h), 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f}
     }};
-    const std::array<int, 3> indices {0, 1, 2};
-    SDL_RenderGeometry(renderer, nullptr, vertices.data(), 3, indices.data(), 3);
+    const std::array<std::uint32_t, 6> indices {0, 1, 2, 0, 2, 3};
+
+    glUseProgram(renderer->textProgram);
+    glUniform2f(renderer->textViewportLocation, static_cast<float>(renderer->drawableWidth), static_cast<float>(renderer->drawableHeight));
+    glUniform1i(renderer->textSamplerLocation, 0);
+    glBindVertexArray(renderer->textVao);
+    glBindBuffer(GL_ARRAY_BUFFER, renderer->textVbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices.data(), GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, renderer->textEbo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices.data(), GL_DYNAMIC_DRAW);
+    glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(indices.size()), GL_UNSIGNED_INT, nullptr);
+    glBindVertexArray(0);
+
+    glDeleteTextures(1, &texture);
+    SDL_FreeSurface(rgbaSurface);
 }
 
-void drawLine(SDL_Renderer* renderer, SDL_FPoint a, SDL_FPoint b, SDL_Color color) {
-    setColor(renderer, color);
-    SDL_RenderDrawLineF(renderer, a.x, a.y, b.x, b.y);
+void presentFrame(RendererState* renderer, SDL_Window* window) {
+    flushColored(renderer);
+    SDL_GL_SwapWindow(window);
 }
 
 std::string formatFloat(float value, int precision = 1) {
@@ -210,33 +684,41 @@ bool Renderer::initialize() {
         return false;
     }
 
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_ACCELERATED_VISUAL, 1);
+#if defined(__APPLE__)
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
+#endif
+
     window_ = SDL_CreateWindow(
         "ALife Sim",
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
         kWindowWidth,
         kWindowHeight,
-        SDL_WINDOW_SHOWN
+        SDL_WINDOW_SHOWN | SDL_WINDOW_OPENGL
     );
     if (window_ == nullptr) {
         shutdown();
         return false;
     }
 
-    renderer_ = SDL_CreateRenderer(
-        window_,
-        -1,
-        SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_TARGETTEXTURE
-    );
-    if (renderer_ == nullptr) {
-        renderer_ = SDL_CreateRenderer(window_, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE);
-    }
-    if (renderer_ == nullptr) {
+    renderer_ = new RendererState {};
+    renderer_->glContext = SDL_GL_CreateContext(window_);
+    if (renderer_->glContext == nullptr) {
         shutdown();
         return false;
     }
 
-    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+    SDL_GL_MakeCurrent(window_, renderer_->glContext);
+    SDL_GL_SetSwapInterval(1);
+    if (!initializeBackend(renderer_)) {
+        shutdown();
+        return false;
+    }
 
     if (const auto fontPath = findFontPath(); fontPath.has_value()) {
         titleFont_ = TTF_OpenFont(fontPath->c_str(), 20);
@@ -244,10 +726,17 @@ bool Renderer::initialize() {
         smallFont_ = TTF_OpenFont(fontPath->c_str(), 13);
     }
 
+    if (!creatureSdf_.initialize(ALIFE_SHADER_DIR)) {
+        SDL_Log("CreatureSDF initialization failed");
+        shutdown();
+        return false;
+    }
+
     return true;
 }
 
 void Renderer::shutdown() {
+    creatureSdf_.shutdown();
     if (titleFont_ != nullptr) {
         TTF_CloseFont(titleFont_);
         titleFont_ = nullptr;
@@ -261,7 +750,13 @@ void Renderer::shutdown() {
         smallFont_ = nullptr;
     }
     if (renderer_ != nullptr) {
-        SDL_DestroyRenderer(renderer_);
+        if (renderer_->glContext != nullptr) {
+            SDL_GL_MakeCurrent(window_, renderer_->glContext);
+            destroyBackend(renderer_);
+            SDL_GL_DeleteContext(renderer_->glContext);
+            renderer_->glContext = nullptr;
+        }
+        delete renderer_;
         renderer_ = nullptr;
     }
     if (window_ != nullptr) {
@@ -278,16 +773,118 @@ void Renderer::shutdown() {
 }
 
 void Renderer::updateViewport(const Simulation& simulation) {
-    const float availableWidth = static_cast<float>(kWindowWidth - kPanelWidth - kMargin * 3);
-    const float availableHeight = static_cast<float>(kWindowHeight - kMargin * 2);
-    const float scale = std::min(availableWidth / simulation.worldWidth(), availableHeight / simulation.worldHeight());
-    const float drawWidth = simulation.worldWidth() * scale;
-    const float drawHeight = simulation.worldHeight() * scale;
+    (void)simulation;
+    worldViewport_.x = static_cast<float>(kMargin);
+    worldViewport_.y = static_cast<float>(kMargin);
+    worldViewport_.w = static_cast<float>(kWindowWidth - kPanelWidth - kMargin * 3);
+    worldViewport_.h = static_cast<float>(kWindowHeight - kMargin * 2);
+}
 
-    worldViewport_.x = static_cast<float>(kMargin) + (availableWidth - drawWidth) * 0.5f;
-    worldViewport_.y = static_cast<float>(kMargin) + (availableHeight - drawHeight) * 0.5f;
-    worldViewport_.w = drawWidth;
-    worldViewport_.h = drawHeight;
+void Renderer::resetCamera(const Simulation& simulation) {
+    cameraZoom_ = kDefaultCameraZoom;
+    cameraInitialized_ = true;
+    focusSelection(simulation, true);
+}
+
+float Renderer::worldScale(const Simulation& simulation) const {
+    return std::min(worldViewport_.w / simulation.worldWidth(), worldViewport_.h / simulation.worldHeight()) * cameraZoom_;
+}
+
+Vec2 Renderer::visibleWorldExtents(const Simulation& simulation) const {
+    const float scale = worldScale(simulation);
+    if (scale <= 1e-5f) {
+        return {simulation.worldWidth(), simulation.worldHeight()};
+    }
+    return {
+        worldViewport_.w / scale,
+        worldViewport_.h / scale
+    };
+}
+
+void Renderer::focusSelection(const Simulation& simulation, bool snap) {
+    const CreatureSnapshot selected = simulation.selectedCreatureSnapshot();
+    if (selected.valid) {
+        if (snap || !cameraInitialized_) {
+            cameraCenter_ = selected.position;
+        } else {
+            cameraCenter_ = unwrapPointNearReference(
+                selected.position,
+                cameraCenter_,
+                simulation.worldWidth(),
+                simulation.worldHeight()
+            );
+        }
+        cameraInitialized_ = true;
+        return;
+    }
+
+    if (!cameraInitialized_ || snap) {
+        cameraCenter_ = {simulation.worldWidth() * 0.5f, simulation.worldHeight() * 0.5f};
+        cameraInitialized_ = true;
+    }
+}
+
+void Renderer::toggleFollowSelection(const Simulation& simulation) {
+    followSelection_ = !followSelection_;
+    if (followSelection_) {
+        focusSelection(simulation, true);
+    }
+}
+
+void Renderer::toggleBrainOverlay() {
+    showBrainOverlay_ = !showBrainOverlay_;
+}
+
+void Renderer::zoomView(float zoomSteps, const Simulation& simulation, std::optional<SDL_Point> anchor) {
+    if (!cameraInitialized_) {
+        resetCamera(simulation);
+    }
+    std::optional<Vec2> anchorBefore;
+    if (anchor.has_value()) {
+        anchorBefore = screenToWorld(anchor->x, anchor->y, simulation);
+    }
+    const float factor = std::pow(1.18f, zoomSteps);
+    cameraZoom_ = std::clamp(cameraZoom_ * factor, kMinCameraZoom, kMaxCameraZoom);
+
+    if (anchorBefore.has_value()) {
+        const float scale = worldScale(simulation);
+        if (scale > 1e-5f) {
+            const Vec2 targetBefore = unwrapPointNearReference(
+                *anchorBefore,
+                cameraCenter_,
+                simulation.worldWidth(),
+                simulation.worldHeight()
+            );
+            const Vec2 anchorAfter {
+                cameraCenter_.x + (static_cast<float>(anchor->x) - (worldViewport_.x + worldViewport_.w * 0.5f)) / scale,
+                cameraCenter_.y + (static_cast<float>(anchor->y) - (worldViewport_.y + worldViewport_.h * 0.5f)) / scale
+            };
+            cameraCenter_ = cameraCenter_ + (targetBefore - anchorAfter);
+        }
+    }
+}
+
+void Renderer::updateCamera(const Simulation& simulation) {
+    if (!cameraInitialized_) {
+        resetCamera(simulation);
+    }
+    if (followSelection_ && !draggingWorld_) {
+        focusSelection(simulation, false);
+    }
+}
+
+Vec2 Renderer::wrappedPositionNearCamera(const Vec2& point, const Simulation& simulation) const {
+    return unwrapPointNearReference(point, cameraCenter_, simulation.worldWidth(), simulation.worldHeight());
+}
+
+SDL_FPoint Renderer::worldToScreen(const Vec2& world, const Simulation& simulation) const {
+    const float scale = worldScale(simulation);
+    const Vec2 wrapped = wrappedPositionNearCamera(world, simulation);
+    const Vec2 delta {wrapped.x - cameraCenter_.x, wrapped.y - cameraCenter_.y};
+    return {
+        worldViewport_.x + worldViewport_.w * 0.5f + delta.x * scale,
+        worldViewport_.y + worldViewport_.h * 0.5f + delta.y * scale
+    };
 }
 
 bool Renderer::screenPointInWorld(int screenX, int screenY) const {
@@ -302,9 +899,119 @@ std::optional<Vec2> Renderer::screenToWorld(int screenX, int screenY, const Simu
         return std::nullopt;
     }
 
-    const float nx = (static_cast<float>(screenX) - worldViewport_.x) / worldViewport_.w;
-    const float ny = (static_cast<float>(screenY) - worldViewport_.y) / worldViewport_.h;
-    return Vec2 {nx * simulation.worldWidth(), ny * simulation.worldHeight()};
+    const float scale = worldScale(simulation);
+    if (scale <= 1e-5f) {
+        return std::nullopt;
+    }
+    return wrapWorldPoint(
+        {
+            cameraCenter_.x + (static_cast<float>(screenX) - (worldViewport_.x + worldViewport_.w * 0.5f)) / scale,
+            cameraCenter_.y + (static_cast<float>(screenY) - (worldViewport_.y + worldViewport_.h * 0.5f)) / scale
+        },
+        simulation.worldWidth(),
+        simulation.worldHeight()
+    );
+}
+
+void Renderer::beginWorldDrag(int screenX, int screenY) {
+    draggingWorld_ = true;
+    dragStartScreenX_ = screenX;
+    dragStartScreenY_ = screenY;
+    dragStartCamera_ = cameraCenter_;
+    followSelection_ = false;
+}
+
+void Renderer::updateWorldDrag(int screenX, int screenY, const Simulation& simulation) {
+    if (!draggingWorld_) {
+        return;
+    }
+    const float scale = worldScale(simulation);
+    if (scale <= 1e-5f) {
+        return;
+    }
+    cameraCenter_ = {
+        dragStartCamera_.x - (static_cast<float>(screenX - dragStartScreenX_) / scale),
+        dragStartCamera_.y - (static_cast<float>(screenY - dragStartScreenY_) / scale)
+    };
+    cameraInitialized_ = true;
+}
+
+void Renderer::endWorldDrag() {
+    draggingWorld_ = false;
+}
+
+bool Renderer::isDraggingWorld() const {
+    return draggingWorld_;
+}
+
+void Renderer::panCameraWorld(const Vec2& delta) {
+    if (std::abs(delta.x) <= 1e-5f && std::abs(delta.y) <= 1e-5f) {
+        return;
+    }
+    cameraCenter_ = cameraCenter_ + delta;
+    cameraInitialized_ = true;
+    followSelection_ = false;
+}
+
+float Renderer::zoomLevel() const {
+    return cameraZoom_;
+}
+
+bool Renderer::screenPointInSelection(int screenX, int screenY) const {
+    return pointInRect(screenX, screenY, selectionViewport_);
+}
+
+void Renderer::cycleDebugOverlay() {
+    switch (debugOverlay_) {
+        case DebugOverlay::None:
+            debugOverlay_ = DebugOverlay::Nutrient;
+            break;
+        case DebugOverlay::Nutrient:
+            debugOverlay_ = DebugOverlay::Shelter;
+            break;
+        case DebugOverlay::Shelter:
+            debugOverlay_ = DebugOverlay::Shear;
+            break;
+        default:
+            debugOverlay_ = DebugOverlay::None;
+            break;
+    }
+}
+
+void Renderer::scrollSelection(float deltaPixels) {
+    selectionScroll_ = std::max(0.0f, selectionScroll_ + deltaPixels);
+}
+
+const char* Renderer::debugOverlayLabel() const {
+    switch (debugOverlay_) {
+        case DebugOverlay::Nutrient:
+            return "nutrient";
+        case DebugOverlay::Shelter:
+            return "lee shelter";
+        case DebugOverlay::Shear:
+            return "shear";
+        default:
+            return "off";
+    }
+}
+
+Renderer::UiAction Renderer::uiActionAt(int screenX, int screenY) const {
+    if (pointInRect(screenX, screenY, randomSelectButton_)) {
+        return UiAction::SelectRandom;
+    }
+    if (pointInRect(screenX, screenY, topEnergyButton_)) {
+        return UiAction::SelectTopEnergy;
+    }
+    if (pointInRect(screenX, screenY, dominantLineageButton_)) {
+        return UiAction::SelectDominantLineage;
+    }
+    if (pointInRect(screenX, screenY, newestLineageButton_)) {
+        return UiAction::SelectNewestLineage;
+    }
+    if (pointInRect(screenX, screenY, overlayButton_)) {
+        return UiAction::CycleOverlay;
+    }
+    return UiAction::None;
 }
 
 void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
@@ -312,32 +1019,36 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         return;
     }
 
+    beginFrame(renderer_, window_);
     updateViewport(simulation);
+    updateCamera(simulation);
+    selectionViewport_ = {0.0f, 0.0f, 0.0f, 0.0f};
+    randomSelectButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
+    topEnergyButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
+    dominantLineageButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
+    newestLineageButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
+    overlayButton_ = {0.0f, 0.0f, 0.0f, 0.0f};
 
-    const auto worldToScreen = [&](const Vec2& world) {
-        return SDL_FPoint {
-            worldViewport_.x + (world.x / simulation.worldWidth()) * worldViewport_.w,
-            worldViewport_.y + (world.y / simulation.worldHeight()) * worldViewport_.h
-        };
-    };
-    const float worldScale = worldViewport_.w / simulation.worldWidth();
+    const float scale = worldScale(simulation);
+    const float worldScale = scale;
+    const float visibleWorldWidth = worldViewport_.w / scale;
+    const float visibleWorldHeight = worldViewport_.h / scale;
 
     auto drawText = [&](TTF_Font* font, float x, float y, const std::string& text, SDL_Color color) {
-        if (font == nullptr || text.empty()) {
-            return;
-        }
-        SDL_Surface* surface = TTF_RenderUTF8_Blended(font, text.c_str(), color);
-        if (surface == nullptr) {
-            return;
-        }
-        SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer_, surface);
-        if (texture != nullptr) {
-            SDL_FRect destination {x, y, static_cast<float>(surface->w), static_cast<float>(surface->h)};
-            SDL_RenderCopyF(renderer_, texture, nullptr, &destination);
-            SDL_DestroyTexture(texture);
-        }
-        SDL_FreeSurface(surface);
+        renderLabel(renderer_, font, x, y, text, color);
     };
+
+    const Stats& stats = simulation.stats();
+    const auto info = simulation.selectionInfo();
+    const auto& history = simulation.history();
+    const std::uint64_t currentSelectionId = simulation.selectedCreature();
+    if (currentSelectionId != lastSelectedCreatureId_) {
+        selectionScroll_ = 0.0f;
+        if (followSelection_) {
+            focusSelection(simulation, true);
+        }
+        lastSelectedCreatureId_ = currentSelectionId;
+    }
 
     auto drawCard = [&](const SDL_FRect& rect, const std::string& title) {
         fillRect(renderer_, rect, {22, 28, 37, 255});
@@ -345,30 +1056,23 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         drawText(font_, rect.x + 10.0f, rect.y + 5.0f, title, {224, 232, 240, 255});
     };
 
+    auto drawButton = [&](const SDL_FRect& rect, const std::string& label, SDL_Color fill, SDL_Color text) {
+        fillRect(renderer_, rect, fill);
+        fillRect(renderer_, {rect.x, rect.y + rect.h - 2.0f, rect.w, 2.0f}, tint(fill, 1.18f, 255));
+        drawText(smallFont_, rect.x + 9.0f, rect.y + 4.0f, label, text);
+    };
+
     auto drawSeries = [&](const SDL_FRect& rect, auto getter, float maxValue, SDL_Color color) {
         const auto& history = simulation.history();
         if (history.size() < 2 || maxValue <= 0.0f) {
             return;
         }
-        setColor(renderer_, color);
         for (std::size_t index = 1; index < history.size(); ++index) {
             const float x1 = rect.x + rect.w * (static_cast<float>(index - 1) / static_cast<float>(history.size() - 1));
             const float x2 = rect.x + rect.w * (static_cast<float>(index) / static_cast<float>(history.size() - 1));
             const float y1 = rect.y + rect.h - (getter(history[index - 1]) / maxValue) * rect.h;
             const float y2 = rect.y + rect.h - (getter(history[index]) / maxValue) * rect.h;
-            SDL_RenderDrawLineF(renderer_, x1, y1, x2, y2);
-        }
-    };
-
-    auto drawSignedBar = [&](float x, float y, float w, float h, float value, SDL_Color positive, SDL_Color negative) {
-        fillRect(renderer_, {x, y, w, h}, {34, 43, 56, 255});
-        const float center = x + w * 0.5f;
-        fillRect(renderer_, {center - 1.0f, y, 2.0f, h}, {83, 102, 124, 255});
-        const float clamped = std::clamp(value, -1.0f, 1.0f);
-        if (clamped >= 0.0f) {
-            fillRect(renderer_, {center, y + 1.0f, clamped * (w * 0.5f - 2.0f), h - 2.0f}, positive);
-        } else {
-            fillRect(renderer_, {center + clamped * (w * 0.5f - 2.0f), y + 1.0f, -clamped * (w * 0.5f - 2.0f), h - 2.0f}, negative);
+            drawLine(renderer_, {x1, y1}, {x2, y2}, color);
         }
     };
 
@@ -385,146 +1089,172 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         }
     };
 
-    auto drawCreature = [&](const Creature& creature, bool selected) {
-        const SDL_Color body = hsv(
-            creature.genome.morphology.hue,
-            lerp(0.42f, 0.82f, creature.genome.morphology.armor),
-            lerp(0.7f, 0.96f, creature.genome.ecology.plantAffinity)
-        );
-        const SDL_Color accent = hsv(creature.genome.morphology.hue + 0.07f, 0.58f, 0.98f, 220);
-        const SDL_Color shell = tint(body, 0.62f, 255);
-        const SDL_Color shadow = tint(body, 0.42f, 160);
-        const SDL_Color eye = hsv(0.14f, 0.18f, 0.98f);
+    auto drawBrainOverlay = [&](const SelectionInfo& info) {
+        if (!info.valid) {
+            return;
+        }
 
-        const SDL_FPoint head = worldToScreen(creature.bodyPoints[0]);
-        const SDL_FPoint trailEnd {
-            head.x - creature.velocity.x * worldScale * 0.05f,
-            head.y - creature.velocity.y * worldScale * 0.05f
+        const SDL_FRect overlay {
+            worldViewport_.x + 16.0f,
+            worldViewport_.y + 16.0f,
+            std::min(360.0f, worldViewport_.w * 0.42f),
+            std::min(250.0f, worldViewport_.h * 0.34f)
         };
-        drawLine(renderer_, head, trailEnd, {73, 86, 107, 90});
-
-        if (creature.signal > 0.08f) {
-            const float aura = (creature.traits.signalRange * worldScale) * 0.12f;
-            fillEllipse(renderer_, head.x, head.y, aura, aura * 0.84f, {88, 180, 214, static_cast<std::uint8_t>(18 + creature.signal * 28.0f)});
-        }
-
-        for (int segmentIndex = kBodySegments - 1; segmentIndex >= 0; --segmentIndex) {
-            const SDL_FPoint point = worldToScreen(creature.bodyPoints[segmentIndex]);
-            const float radius = creature.bodyRadii[segmentIndex] * worldScale;
-            const float shade = lerp(0.78f, 1.05f, 1.0f - static_cast<float>(segmentIndex) / static_cast<float>(kBodySegments - 1));
-            const SDL_Color segmentColor = tint(body, shade, 240);
-            fillEllipse(renderer_, point.x, point.y, radius * 1.08f, radius * 0.9f, segmentColor);
-            fillEllipse(renderer_, point.x - radius * 0.12f, point.y, radius * 0.56f, radius * 0.42f, shadow);
-        }
-
-        const Vec2 forwardVector {std::cos(creature.angle), std::sin(creature.angle)};
-        const Vec2 sideVector {-forwardVector.y, forwardVector.x};
-
-        const Vec2 finBaseA = creature.bodyPoints[1];
-        const Vec2 finBaseB = creature.bodyPoints[2];
-        const Vec2 finTipTop = finBaseA + sideVector * creature.traits.finSpan - forwardVector * creature.traits.segmentSpacing * 0.2f;
-        const Vec2 finTipBottom = finBaseA - sideVector * creature.traits.finSpan - forwardVector * creature.traits.segmentSpacing * 0.2f;
-        fillTriangle(renderer_, worldToScreen(finBaseA), worldToScreen(finTipTop), worldToScreen(finBaseB), accent);
-        fillTriangle(renderer_, worldToScreen(finBaseA), worldToScreen(finTipBottom), worldToScreen(finBaseB), accent);
-
-        const Vec2 tailBase = creature.bodyPoints[kBodySegments - 1];
-        const Vec2 tailAnchor = creature.bodyPoints[kBodySegments - 2];
-        const Vec2 tailDirection = normalize(tailBase - tailAnchor);
-        const Vec2 tailSide {-tailDirection.y, tailDirection.x};
-        const float tailSpan = creature.bodyRadii[kBodySegments - 1] * 1.8f;
-        const Vec2 tailTip = tailBase - tailDirection * (creature.traits.segmentSpacing * 1.4f);
-        fillTriangle(
-            renderer_,
-            worldToScreen(tailBase + tailSide * tailSpan),
-            worldToScreen(tailTip),
-            worldToScreen(tailBase - tailSide * tailSpan),
-            accent
+        fillRect(renderer_, overlay, {12, 16, 22, 220});
+        fillRect(renderer_, {overlay.x, overlay.y, overlay.w, 26.0f}, {23, 33, 45, 232});
+        drawText(font_, overlay.x + 10.0f, overlay.y + 4.0f, "Brain Topology", {235, 240, 244, 255});
+        drawText(
+            smallFont_,
+            overlay.x + overlay.w - 112.0f,
+            overlay.y + 7.0f,
+            "h" + std::to_string(info.brainHiddenCount) + "  c" + std::to_string(info.brainConnectionCount),
+            {156, 176, 196, 255}
         );
 
-        const Vec2 jawBase = creature.bodyPoints[0] + forwardVector * (creature.bodyRadii[0] * 0.8f);
-        const Vec2 jawTip = jawBase + forwardVector * (creature.traits.biteReach * 0.55f);
-        const Vec2 jawSide = sideVector * (creature.bodyRadii[0] * lerp(0.2f, 0.5f, creature.genome.morphology.jawArc));
-        fillTriangle(renderer_, worldToScreen(jawBase + jawSide), worldToScreen(jawTip), worldToScreen(jawBase - jawSide), shell);
+        const SDL_FRect graph {
+            overlay.x + 10.0f,
+            overlay.y + 34.0f,
+            overlay.w - 20.0f,
+            overlay.h - 58.0f
+        };
+        fillRect(renderer_, graph, {16, 21, 28, 210});
 
-        const SDL_FPoint eyePoint = worldToScreen(creature.bodyPoints[0] + forwardVector * creature.bodyRadii[0] * 0.18f - sideVector * creature.bodyRadii[0] * 0.24f);
-        fillEllipse(renderer_, eyePoint.x, eyePoint.y, 2.8f, 2.8f, eye);
-        fillEllipse(renderer_, eyePoint.x + 0.6f, eyePoint.y, 1.0f, 1.0f, {14, 16, 20, 255});
+        const float inputX = graph.x + 18.0f;
+        const float memoryX = graph.x + graph.w * 0.32f;
+        const float hiddenX = graph.x + graph.w * 0.62f;
+        const float outputX = graph.x + graph.w - 22.0f;
 
-        if (creature.genome.morphology.pattern < 0.5f) {
-            fillEllipse(renderer_, head.x - creature.bodyRadii[0] * worldScale * 0.16f, head.y + creature.bodyRadii[0] * worldScale * 0.12f, 3.2f, 2.2f, shadow);
-            const SDL_FPoint torso = worldToScreen(creature.bodyPoints[1]);
-            fillEllipse(renderer_, torso.x + creature.bodyRadii[1] * worldScale * 0.1f, torso.y - 1.0f, 2.6f, 1.8f, shadow);
-        } else {
-            for (int segmentIndex = 0; segmentIndex < kBodySegments; ++segmentIndex) {
-                const SDL_FPoint point = worldToScreen(creature.bodyPoints[segmentIndex]);
-                fillEllipse(renderer_, point.x, point.y - creature.bodyRadii[segmentIndex] * worldScale * 0.24f, creature.bodyRadii[segmentIndex] * worldScale * 0.22f, 1.5f, shadow);
+        const auto nodeY = [&](int index, int count) {
+            if (count <= 1) {
+                return graph.y + graph.h * 0.5f;
             }
+            const float t = static_cast<float>(index) / static_cast<float>(count - 1);
+            return graph.y + 8.0f + t * (graph.h - 16.0f);
+        };
+
+        const auto valueForNode = [&](BrainGenome::NodeKind kind, int index) {
+            switch (kind) {
+                case BrainGenome::NodeKind::Input:
+                    return info.inputs[index];
+                case BrainGenome::NodeKind::Memory:
+                    return info.memory[index];
+                case BrainGenome::NodeKind::Hidden:
+                    return info.hiddenActivations[index];
+                default:
+                    return info.outputs[index];
+            }
+        };
+
+        const auto pointForNode = [&](BrainGenome::NodeKind kind, int index) {
+            switch (kind) {
+                case BrainGenome::NodeKind::Input:
+                    return SDL_FPoint {inputX, nodeY(index, kInputCount)};
+                case BrainGenome::NodeKind::Memory:
+                    return SDL_FPoint {memoryX, nodeY(index, kMemorySize)};
+                case BrainGenome::NodeKind::Hidden:
+                    return SDL_FPoint {hiddenX, nodeY(index, std::max(1, info.brainHiddenCount))};
+                default:
+                    return SDL_FPoint {outputX, nodeY(index, kOutputCount)};
+            }
+        };
+
+        drawText(smallFont_, graph.x + 4.0f, graph.y - 1.0f, "inputs", {112, 142, 170, 255});
+        drawText(smallFont_, memoryX - 18.0f, graph.y - 1.0f, "mem", {112, 142, 170, 255});
+        drawText(smallFont_, hiddenX - 20.0f, graph.y - 1.0f, "hidden", {112, 142, 170, 255});
+        drawText(smallFont_, outputX - 25.0f, graph.y - 1.0f, "out", {112, 142, 170, 255});
+
+        for (int connectionIndex = 0; connectionIndex < info.brainConnectionCount; ++connectionIndex) {
+            const auto& connection = info.connections[connectionIndex];
+            const SDL_FPoint start = pointForNode(connection.fromKind, connection.fromIndex);
+            const SDL_FPoint end = pointForNode(connection.toKind, connection.toIndex);
+            const float magnitude = clamp01(std::abs(connection.weight) / 2.0f);
+            const float sourceDrive = clamp01(std::abs(valueForNode(connection.fromKind, connection.fromIndex)));
+            const std::uint8_t alpha = static_cast<std::uint8_t>(28 + 118.0f * std::max(magnitude, sourceDrive * 0.75f));
+            const SDL_Color color = connection.weight >= 0.0f
+                ? SDL_Color {99, 211, 166, alpha}
+                : SDL_Color {233, 128, 104, alpha};
+            drawLine(renderer_, start, end, color);
         }
 
-        if (selected) {
-            const float sensorHalf = creature.traits.sensorSpan * 0.5f;
-            const float sensorLength = creature.traits.sensorRange * worldScale;
-            const Vec2 sensorEdgeA {
-                std::cos(creature.angle - sensorHalf),
-                std::sin(creature.angle - sensorHalf)
-            };
-            const Vec2 sensorEdgeB {
-                std::cos(creature.angle + sensorHalf),
-                std::sin(creature.angle + sensorHalf)
-            };
-            drawLine(renderer_, head, worldToScreen(creature.bodyPoints[0] + sensorEdgeA * creature.traits.sensorRange), {138, 193, 255, 90});
-            drawLine(renderer_, head, worldToScreen(creature.bodyPoints[0] + sensorEdgeB * creature.traits.sensorRange), {138, 193, 255, 90});
-            drawLine(renderer_, head, worldToScreen(creature.bodyPoints[0] + forwardVector * creature.traits.sensorRange), {138, 193, 255, 46});
+        const auto drawNode = [&](BrainGenome::NodeKind kind, int index, float radius) {
+            const float value = valueForNode(kind, index);
+            const SDL_FPoint point = pointForNode(kind, index);
+            const float normalized = kind == BrainGenome::NodeKind::Input
+                ? clamp01(value)
+                : clamp01(value * 0.5f + 0.5f);
+            const SDL_Color fill = kind == BrainGenome::NodeKind::Input
+                ? hsv(0.55f - normalized * 0.08f, 0.5f, 0.36f + normalized * 0.5f, 240)
+                : (value >= 0.0f
+                    ? SDL_Color {static_cast<std::uint8_t>(72 + normalized * 88.0f), static_cast<std::uint8_t>(140 + normalized * 80.0f), 173, 248}
+                    : SDL_Color {214, static_cast<std::uint8_t>(94 + normalized * 60.0f), static_cast<std::uint8_t>(118 + normalized * 68.0f), 248});
+            fillEllipse(renderer_, point.x, point.y, radius, radius, fill);
+            fillEllipse(renderer_, point.x, point.y, radius * 0.45f, radius * 0.45f, {239, 244, 247, 56});
+        };
 
-            const Vec2 biteEdgeA {
-                std::cos(creature.angle - creature.traits.biteArc),
-                std::sin(creature.angle - creature.traits.biteArc)
-            };
-            const Vec2 biteEdgeB {
-                std::cos(creature.angle + creature.traits.biteArc),
-                std::sin(creature.angle + creature.traits.biteArc)
-            };
-            drawLine(renderer_, head, worldToScreen(creature.bodyPoints[0] + biteEdgeA * creature.traits.biteReach), {255, 210, 160, 110});
-            drawLine(renderer_, head, worldToScreen(creature.bodyPoints[0] + biteEdgeB * creature.traits.biteReach), {255, 210, 160, 110});
-
-            const float ringRadius = creature.traits.collisionRadius * worldScale * 0.7f;
-            fillEllipse(renderer_, head.x, head.y, ringRadius, ringRadius, {242, 245, 247, 36});
-            drawLine(
-                renderer_,
-                head,
-                {head.x + forwardVector.x * ringRadius, head.y + forwardVector.y * ringRadius},
-                {243, 244, 246, 180}
-            );
-            (void)sensorLength;
+        for (int inputIndex = 0; inputIndex < kInputCount; ++inputIndex) {
+            drawNode(BrainGenome::NodeKind::Input, inputIndex, 2.2f);
         }
+        for (int memoryIndex = 0; memoryIndex < kMemorySize; ++memoryIndex) {
+            drawNode(BrainGenome::NodeKind::Memory, memoryIndex, 3.2f);
+        }
+        for (int hiddenIndex = 0; hiddenIndex < info.brainHiddenCount; ++hiddenIndex) {
+            drawNode(BrainGenome::NodeKind::Hidden, hiddenIndex, 3.6f);
+        }
+        constexpr std::array<const char*, kOutputCount> overlayOutputLabels {"turn", "thrust", "graze", "bite", "sig", "split"};
+        for (int outputIndex = 0; outputIndex < kOutputCount; ++outputIndex) {
+            drawNode(BrainGenome::NodeKind::Output, outputIndex, 4.2f);
+            const SDL_FPoint point = pointForNode(BrainGenome::NodeKind::Output, outputIndex);
+            drawText(smallFont_, point.x + 8.0f, point.y - 6.0f, overlayOutputLabels[outputIndex], {210, 219, 226, 255});
+        }
+
+        fillRect(renderer_, {overlay.x, overlay.y + overlay.h - 18.0f, overlay.w, 18.0f}, {20, 28, 36, 226});
+        drawText(
+            smallFont_,
+            overlay.x + 8.0f,
+            overlay.y + overlay.h - 15.0f,
+            "green excite  red inhibit  node brightness = live activation",
+            {152, 168, 184, 255}
+        );
     };
 
     fillRect(renderer_, {0.0f, 0.0f, static_cast<float>(kWindowWidth), static_cast<float>(kWindowHeight)}, {11, 14, 20, 255});
     fillRect(renderer_, worldViewport_, {20, 27, 36, 255});
 
+    const SDL_Rect worldClip {
+        static_cast<int>(std::floor(worldViewport_.x)),
+        static_cast<int>(std::floor(worldViewport_.y)),
+        static_cast<int>(std::ceil(worldViewport_.w)),
+        static_cast<int>(std::ceil(worldViewport_.h))
+    };
+    setClipRect(renderer_, &worldClip);
+
     constexpr int gridColumns = 26;
     constexpr int gridRows = 18;
     for (int row = 0; row < gridRows; ++row) {
         for (int column = 0; column < gridColumns; ++column) {
-            const float tx = (static_cast<float>(column) + 0.5f) / static_cast<float>(gridColumns);
-            const float ty = (static_cast<float>(row) + 0.5f) / static_cast<float>(gridRows);
-            const Vec2 sample {
-                tx * simulation.worldWidth(),
-                ty * simulation.worldHeight()
-            };
+            const float tx = (static_cast<float>(column) + 0.5f) / static_cast<float>(gridColumns) - 0.5f;
+            const float ty = (static_cast<float>(row) + 0.5f) / static_cast<float>(gridRows) - 0.5f;
+            const Vec2 sample = wrapWorldPoint(
+                {
+                    cameraCenter_.x + tx * visibleWorldWidth,
+                    cameraCenter_.y + ty * visibleWorldHeight
+                },
+                simulation.worldWidth(),
+                simulation.worldHeight()
+            );
             const float nutrient = simulation.sampleNutrient(sample.x, sample.y);
             const Vec2 current = simulation.sampleCurrent(sample.x, sample.y);
             SDL_Color color = hsv(0.47f + nutrient * 0.1f, 0.42f, 0.16f + nutrient * 0.22f, static_cast<std::uint8_t>(32 + nutrient * 60.0f));
+            const SDL_FPoint center = worldToScreen(sample, simulation);
 
             const SDL_FRect cell {
-                worldViewport_.x + tx * worldViewport_.w - worldViewport_.w / static_cast<float>(gridColumns) * 0.5f,
-                worldViewport_.y + ty * worldViewport_.h - worldViewport_.h / static_cast<float>(gridRows) * 0.5f,
+                center.x - worldViewport_.w / static_cast<float>(gridColumns) * 0.5f,
+                center.y - worldViewport_.h / static_cast<float>(gridRows) * 0.5f,
                 worldViewport_.w / static_cast<float>(gridColumns) + 1.0f,
                 worldViewport_.h / static_cast<float>(gridRows) + 1.0f
             };
             fillRect(renderer_, cell, color);
 
-            const SDL_FPoint center {cell.x + cell.w * 0.5f, cell.y + cell.h * 0.5f};
             const SDL_FPoint arrow {
                 center.x + current.x * 0.015f * worldScale,
                 center.y + current.y * 0.015f * worldScale
@@ -533,31 +1263,182 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         }
     }
 
+    if (debugOverlay_ != DebugOverlay::None) {
+        constexpr int overlayColumns = 32;
+        constexpr int overlayRows = 24;
+        for (int row = 0; row < overlayRows; ++row) {
+            for (int column = 0; column < overlayColumns; ++column) {
+                const float tx = (static_cast<float>(column) + 0.5f) / static_cast<float>(overlayColumns) - 0.5f;
+                const float ty = (static_cast<float>(row) + 0.5f) / static_cast<float>(overlayRows) - 0.5f;
+                const Vec2 sample = wrapWorldPoint(
+                    {
+                        cameraCenter_.x + tx * visibleWorldWidth,
+                        cameraCenter_.y + ty * visibleWorldHeight
+                    },
+                    simulation.worldWidth(),
+                    simulation.worldHeight()
+                );
+                const EnvironmentProbe probe = simulation.probeEnvironment(
+                    sample.x,
+                    sample.y
+                );
+
+                float signal = 0.0f;
+                SDL_Color color {0, 0, 0, 0};
+                switch (debugOverlay_) {
+                    case DebugOverlay::Nutrient:
+                        signal = probe.nutrient;
+                        color = {84, 228, 152, static_cast<std::uint8_t>(18 + signal * 80.0f)};
+                        break;
+                    case DebugOverlay::Shelter:
+                        signal = probe.shelter;
+                        color = {96, 224, 214, static_cast<std::uint8_t>(18 + signal * 150.0f)};
+                        break;
+                    case DebugOverlay::Shear:
+                        signal = probe.shear;
+                        color = {118, 170, 255, static_cast<std::uint8_t>(18 + signal * 150.0f)};
+                        break;
+                    default:
+                        break;
+                }
+
+                if (signal < 0.02f) {
+                    continue;
+                }
+
+                const SDL_FPoint center = worldToScreen(sample, simulation);
+                const SDL_FRect cell {
+                    center.x - worldViewport_.w / static_cast<float>(overlayColumns) * 0.5f,
+                    center.y - worldViewport_.h / static_cast<float>(overlayRows) * 0.5f,
+                    worldViewport_.w / static_cast<float>(overlayColumns) + 1.0f,
+                    worldViewport_.h / static_cast<float>(overlayRows) + 1.0f
+                };
+                fillRect(renderer_, cell, color);
+            }
+        }
+    }
+
+    for (const Reef& reef : simulation.reefs()) {
+        const float radius = reef.radius * worldScale;
+        const SDL_Color halo = {73, 108, 120, static_cast<std::uint8_t>(28 + reef.shear * 22.0f)};
+        const SDL_Color body = {58, 74, 84, 214};
+        const SDL_Color ridge = {112, 143, 154, 124};
+        const SDL_Color moss = {74, 131, 114, static_cast<std::uint8_t>(54 + reef.nutrientBoost * 44.0f)};
+        const SDL_FPoint center = worldToScreen(reef.position, simulation);
+        if (center.x + radius * 1.35f < worldViewport_.x
+            || center.x - radius * 1.35f > worldViewport_.x + worldViewport_.w
+            || center.y + radius * 1.35f < worldViewport_.y
+            || center.y - radius * 1.35f > worldViewport_.y + worldViewport_.h) {
+            continue;
+        }
+
+        fillEllipse(renderer_, center.x, center.y, radius * 1.22f, radius * 1.12f, halo);
+        fillEllipse(renderer_, center.x, center.y, radius, radius * 0.92f, body);
+        fillEllipse(renderer_, center.x - radius * 0.12f, center.y - radius * 0.08f, radius * 0.52f, radius * 0.38f, ridge);
+        fillEllipse(renderer_, center.x + radius * 0.16f, center.y + radius * 0.1f, radius * 0.42f, radius * 0.28f, moss);
+        drawLine(
+            renderer_,
+            {center.x - radius * 0.54f, center.y - radius * 0.16f},
+            {center.x + radius * 0.44f, center.y + radius * 0.12f},
+            {136, 167, 178, 74}
+        );
+        drawLine(
+            renderer_,
+            {center.x - radius * 0.28f, center.y + radius * 0.26f},
+            {center.x + radius * 0.24f, center.y - radius * 0.3f},
+            {136, 167, 178, 62}
+        );
+    }
+
     for (const Bloom& bloom : simulation.blooms()) {
-        const SDL_FPoint screen = worldToScreen(bloom.position);
+        const SDL_FPoint screen = worldToScreen(bloom.position, simulation);
         const float radius = 3.5f + bloom.energy / bloom.maxEnergy * 8.0f;
         fillEllipse(renderer_, screen.x, screen.y, radius, radius * 0.82f, {74, 211, 153, 210});
         fillEllipse(renderer_, screen.x, screen.y, radius * 0.55f, radius * 0.45f, {176, 253, 193, 200});
     }
 
     for (const Carrion& chunk : simulation.carrion()) {
-        const SDL_FPoint screen = worldToScreen(chunk.position);
+        const SDL_FPoint screen = worldToScreen(chunk.position, simulation);
         const float radius = 2.8f + std::sqrt(std::max(chunk.energy, 1.0f)) * 0.55f;
         fillEllipse(renderer_, screen.x, screen.y, radius, radius * 0.75f, {171, 77, 54, 190});
         fillEllipse(renderer_, screen.x + radius * 0.3f, screen.y - radius * 0.2f, radius * 0.35f, radius * 0.26f, {229, 155, 118, 160});
     }
 
-    const std::uint64_t selectedId = simulation.selectedCreature();
-    for (const Creature& creature : simulation.creatures()) {
-        if (creature.id != selectedId) {
-            drawCreature(creature, false);
+    // Flush accumulated batch geometry before switching to SDF pipeline
+    flushColored(renderer_);
+
+    creatureSdf_.render(
+        simulation,
+        worldViewport_,
+        cameraZoom_,
+        cameraCenter_,
+        renderer_->drawableWidth,
+        renderer_->drawableHeight
+    );
+
+    // Restore batched geometry VAO after SDF rendering
+    glBindVertexArray(renderer_->colorVao);
+    glUseProgram(renderer_->colorProgram);
+
+    // Selection debug overlays (sensor arc, bite arc, collision ring)
+    {
+        const std::uint64_t selectedId = simulation.selectedCreature();
+        if (selectedId != 0) {
+            for (const Creature& creature : simulation.creatures()) {
+                if (!creature.alive || creature.id != selectedId) continue;
+
+                // 'scale' already computed at top of renderFrame from worldScale(simulation)
+                const SDL_FPoint head = worldToScreen(creature.bodyPoints[0], simulation);
+                const Vec2 forwardVector {std::cos(creature.angle), std::sin(creature.angle)};
+
+                auto wrappedPointToScreen = [&](Vec2 point) -> SDL_FPoint {
+                    return worldToScreen(point, simulation);
+                };
+
+                // Sensor arc
+                const float sensorHalf = creature.traits.sensorSpan * 0.5f;
+                const Vec2 sensorEdgeA {
+                    std::cos(creature.angle - sensorHalf),
+                    std::sin(creature.angle - sensorHalf)
+                };
+                const Vec2 sensorEdgeB {
+                    std::cos(creature.angle + sensorHalf),
+                    std::sin(creature.angle + sensorHalf)
+                };
+                drawLine(renderer_, head, wrappedPointToScreen(creature.bodyPoints[0] + sensorEdgeA * creature.traits.sensorRange), {138, 193, 255, 90});
+                drawLine(renderer_, head, wrappedPointToScreen(creature.bodyPoints[0] + sensorEdgeB * creature.traits.sensorRange), {138, 193, 255, 90});
+                drawLine(renderer_, head, wrappedPointToScreen(creature.bodyPoints[0] + forwardVector * creature.traits.sensorRange), {138, 193, 255, 46});
+
+                // Bite arc
+                const Vec2 biteEdgeA {
+                    std::cos(creature.angle - creature.traits.biteArc),
+                    std::sin(creature.angle - creature.traits.biteArc)
+                };
+                const Vec2 biteEdgeB {
+                    std::cos(creature.angle + creature.traits.biteArc),
+                    std::sin(creature.angle + creature.traits.biteArc)
+                };
+                drawLine(renderer_, head, wrappedPointToScreen(creature.bodyPoints[0] + biteEdgeA * creature.traits.biteReach), {255, 210, 160, 110});
+                drawLine(renderer_, head, wrappedPointToScreen(creature.bodyPoints[0] + biteEdgeB * creature.traits.biteReach), {255, 210, 160, 110});
+
+                // Collision ring
+                const float ringRadius = creature.traits.collisionRadius * scale * 0.7f;
+                fillEllipse(renderer_, head.x, head.y, ringRadius, ringRadius, {242, 245, 247, 36});
+                drawLine(
+                    renderer_,
+                    head,
+                    {head.x + forwardVector.x * ringRadius, head.y + forwardVector.y * ringRadius},
+                    {243, 244, 246, 180}
+                );
+                break;
+            }
         }
     }
-    for (const Creature& creature : simulation.creatures()) {
-        if (creature.id == selectedId) {
-            drawCreature(creature, true);
-        }
+
+    if (showBrainOverlay_) {
+        drawBrainOverlay(info);
     }
+    setClipRect(renderer_, nullptr);
 
     const SDL_FRect panel {
         static_cast<float>(kWindowWidth - kPanelWidth - kMargin),
@@ -574,10 +1455,6 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     drawText(smallFont_, panel.x + 18.0f, textY, "segmented phenotype ecology", {129, 151, 176, 255});
     textY += 34.0f;
 
-    const Stats& stats = simulation.stats();
-    const auto info = simulation.selectionInfo();
-    const auto& history = simulation.history();
-
     const SDL_FRect summaryCard {panel.x + 14.0f, textY, panel.w - 28.0f, 118.0f};
     drawCard(summaryCard, "World");
     drawText(font_, summaryCard.x + 12.0f, summaryCard.y + 36.0f, "time " + formatFloat(simulation.timeSeconds(), 1) + "s", {228, 233, 238, 255});
@@ -587,7 +1464,14 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     drawText(font_, summaryCard.x + 110.0f, summaryCard.y + 58.0f, "blooms " + std::to_string(stats.blooms), {110, 227, 170, 255});
     drawText(font_, summaryCard.x + 235.0f, summaryCard.y + 58.0f, "carrion " + std::to_string(stats.carrion), {222, 141, 112, 255});
     drawText(smallFont_, summaryCard.x + 12.0f, summaryCard.y + 84.0f, "births " + std::to_string(stats.births) + "  deaths " + std::to_string(stats.deaths), {181, 194, 208, 255});
-    drawText(smallFont_, summaryCard.x + 220.0f, summaryCard.y + 84.0f, "season " + formatFloat(stats.season, 2), {181, 194, 208, 255});
+    drawText(smallFont_, summaryCard.x + 208.0f, summaryCard.y + 84.0f, "season " + formatFloat(stats.season, 2) + "  reefs " + std::to_string(stats.reefs), {181, 194, 208, 255});
+    drawText(
+        smallFont_,
+        summaryCard.x + 12.0f,
+        summaryCard.y + 100.0f,
+        "overlay " + std::string(debugOverlayLabel()) + " (V)  zoom " + formatFloat(cameraZoom_, 1) + "x" + (followSelection_ ? "  track on" : "  track off"),
+        {127, 153, 173, 255}
+    );
     textY += summaryCard.h + 10.0f;
 
     const SDL_FRect populationCard {panel.x + 14.0f, textY, panel.w - 28.0f, 136.0f};
@@ -607,7 +1491,7 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     drawText(smallFont_, populationCard.x + 230.0f, populationCard.y + 114.0f, "rust carrion", {219, 128, 104, 255});
     textY += populationCard.h + 10.0f;
 
-    const SDL_FRect ecologyCard {panel.x + 14.0f, textY, panel.w - 28.0f, 118.0f};
+    const SDL_FRect ecologyCard {panel.x + 14.0f, textY, panel.w - 28.0f, 136.0f};
     drawCard(ecologyCard, "Ecology Drift");
     const SDL_FRect roleGraph {ecologyCard.x + 10.0f, ecologyCard.y + 36.0f, ecologyCard.w - 20.0f, 54.0f};
     fillRect(renderer_, roleGraph, {14, 18, 24, 255});
@@ -618,52 +1502,160 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
     drawSeries(roleGraph, [](const HistorySample& sample) { return static_cast<float>(sample.grazers); }, roleMax, {125, 218, 139, 255});
     drawSeries(roleGraph, [](const HistorySample& sample) { return static_cast<float>(sample.omnivores); }, roleMax, {125, 173, 236, 255});
     drawSeries(roleGraph, [](const HistorySample& sample) { return static_cast<float>(sample.hunters); }, roleMax, {235, 146, 104, 255});
-    drawText(smallFont_, ecologyCard.x + 12.0f, ecologyCard.y + 96.0f, "avg plant " + formatFloat(stats.avgPlantAffinity, 2), {125, 218, 139, 255});
-    drawText(smallFont_, ecologyCard.x + 136.0f, ecologyCard.y + 96.0f, "avg meat " + formatFloat(stats.avgMeatAffinity, 2), {235, 146, 104, 255});
-    drawText(smallFont_, ecologyCard.x + 248.0f, ecologyCard.y + 96.0f, "avg mass " + formatFloat(stats.avgMass, 1), {202, 214, 226, 255});
+    drawText(smallFont_, ecologyCard.x + 12.0f, ecologyCard.y + 96.0f, "plant " + formatFloat(stats.avgPlantAffinity, 2), {125, 218, 139, 255});
+    drawText(smallFont_, ecologyCard.x + 110.0f, ecologyCard.y + 96.0f, "meat " + formatFloat(stats.avgMeatAffinity, 2), {235, 146, 104, 255});
+    drawText(smallFont_, ecologyCard.x + 202.0f, ecologyCard.y + 96.0f, "reef " + formatFloat(stats.avgSubstrateContact, 2), {156, 188, 198, 255});
+    drawText(smallFont_, ecologyCard.x + 292.0f, ecologyCard.y + 96.0f, "lee " + formatFloat(stats.avgSubstrateShelter, 2), {142, 214, 198, 255});
+    drawText(smallFont_, ecologyCard.x + 12.0f, ecologyCard.y + 114.0f, "lin " + std::to_string(stats.activeLineages), {158, 194, 240, 255});
+    drawText(smallFont_, ecologyCard.x + 88.0f, ecologyCard.y + 114.0f, "dom " + formatFloat(stats.dominantLineageShare, 2), {206, 212, 220, 255});
+    drawText(smallFont_, ecologyCard.x + 170.0f, ecologyCard.y + 114.0f, "shear " + formatFloat(stats.avgLocalShear, 2), {128, 176, 212, 255});
+    drawText(smallFont_, ecologyCard.x + 264.0f, ecologyCard.y + 114.0f, "brain " + formatFloat(stats.avgBrainComplexity, 2), {184, 172, 236, 255});
     textY += ecologyCard.h + 10.0f;
 
-    const SDL_FRect selectionCard {panel.x + 14.0f, textY, panel.w - 28.0f, panel.y + panel.h - textY - 88.0f};
+    constexpr float controlsCardHeight = 132.0f;
+    const SDL_FRect selectionCard {
+        panel.x + 14.0f,
+        textY,
+        panel.w - 28.0f,
+        panel.y + panel.h - textY - (controlsCardHeight + 10.0f)
+    };
     drawCard(selectionCard, "Selection");
+    selectionViewport_ = {selectionCard.x + 10.0f, selectionCard.y + 32.0f, selectionCard.w - 20.0f, selectionCard.h - 42.0f};
+
+    const float selectionContentHeight = info.valid ? 418.0f : 150.0f;
+    const float maxSelectionScroll = std::max(0.0f, selectionContentHeight - selectionViewport_.h);
+    selectionScroll_ = std::clamp(selectionScroll_, 0.0f, maxSelectionScroll);
+
+    const SDL_Rect selectionClip {
+        static_cast<int>(std::floor(selectionViewport_.x)),
+        static_cast<int>(std::floor(selectionViewport_.y)),
+        static_cast<int>(std::ceil(selectionViewport_.w)),
+        static_cast<int>(std::ceil(selectionViewport_.h))
+    };
+    setClipRect(renderer_, &selectionClip);
 
     if (info.valid) {
-        float sy = selectionCard.y + 36.0f;
+        float sy = selectionViewport_.y + 4.0f - selectionScroll_;
         drawText(font_, selectionCard.x + 12.0f, sy, "#" + std::to_string(info.id) + "  " + toString(info.dietClass), {235, 239, 244, 255});
         sy += 22.0f;
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "lineage " + std::to_string(info.lineageId)
+                + (info.lineageParentId > 0 ? " <- " + std::to_string(info.lineageParentId) : "")
+                + " depth " + std::to_string(info.lineageDepth)
+                + " pop " + std::to_string(info.lineagePopulation)
+                + " age " + formatFloat(info.lineageAge, 1),
+            {165, 197, 232, 255}
+        );
+        sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "energy " + formatFloat(info.energy, 1) + "  health " + formatFloat(info.health, 1) + "  age " + formatFloat(info.age, 1), {219, 226, 233, 255});
+        sy += 18.0f;
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "move " + formatFloat(info.worldSpeed, 1)
+                + "  swim " + formatFloat(info.swimSpeed, 1)
+                + "  flow " + formatFloat(info.currentSpeed, 1),
+            {194, 210, 223, 255}
+        );
         sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "mass " + formatFloat(info.mass, 1) + "  body " + formatFloat(info.majorRadius, 1) + " x " + formatFloat(info.minorRadius, 1), {219, 226, 233, 255});
         sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "fin " + formatFloat(info.finSpan, 1) + "  spacing " + formatFloat(info.segmentSpacing, 1) + "  wave " + formatFloat(info.tailWaveAmplitude, 2), {219, 226, 233, 255});
         sy += 18.0f;
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "fin pos " + formatFloat(info.finPlacement, 2)
+                + "  tail len " + formatFloat(info.tailLengthScale, 2)
+                + "  fork " + formatFloat(info.tailFork, 2),
+            {219, 226, 233, 255}
+        );
+        sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "sensor " + formatFloat(info.sensorRange, 1) + "  bite " + formatFloat(info.biteDamage, 1) + "  graze " + formatFloat(info.grazeRate, 1), {219, 226, 233, 255});
         sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "plant " + formatFloat(info.plantAffinity, 2) + "  meat " + formatFloat(info.meatAffinity, 2) + "  aggr " + formatFloat(info.aggression, 2), {219, 226, 233, 255});
         sy += 18.0f;
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "head integ " + formatFloat(info.headIntegrity, 2)
+                + "  tail integ " + formatFloat(info.tailIntegrity, 2),
+            {210, 189, 179, 255}
+        );
+        sy += 18.0f;
         drawText(smallFont_, selectionCard.x + 12.0f, sy, "upkeep " + formatFloat(info.upkeep, 1) + "  repro " + formatFloat(info.reproductionThreshold, 1), {179, 194, 210, 255});
-        sy += 28.0f;
-
-        drawText(smallFont_, selectionCard.x + 12.0f, sy, "controller outputs", {163, 196, 224, 255});
         sy += 18.0f;
-        constexpr std::array<const char*, kOutputCount> outputLabels {"turn", "thrust", "graze", "bite", "signal", "split"};
-        for (int outputIndex = 0; outputIndex < kOutputCount; ++outputIndex) {
-            drawText(smallFont_, selectionCard.x + 12.0f, sy, outputLabels[outputIndex], {205, 214, 222, 255});
-            drawSignedBar(selectionCard.x + 78.0f, sy + 2.0f, selectionCard.w - 96.0f, 10.0f, info.outputs[outputIndex], {99, 211, 166, 255}, {233, 128, 104, 255});
-            sy += 16.0f;
-        }
-
-        sy += 6.0f;
-        drawText(smallFont_, selectionCard.x + 12.0f, sy, "memory state", {163, 196, 224, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, sy, "slip " + formatFloat(info.bodySlip, 2) + "  curve " + formatFloat(info.bodyCurvature, 2) + "  flow " + formatFloat(info.flowAlignment, 2), {179, 194, 210, 255});
         sy += 18.0f;
-        for (int memoryIndex = 0; memoryIndex < kMemorySize; ++memoryIndex) {
-            drawText(smallFont_, selectionCard.x + 12.0f, sy, "m" + std::to_string(memoryIndex + 1), {205, 214, 222, 255});
-            drawSignedBar(selectionCard.x + 78.0f, sy + 2.0f, selectionCard.w - 96.0f, 10.0f, info.memory[memoryIndex], {125, 173, 236, 255}, {200, 126, 232, 255});
-            sy += 16.0f;
-        }
-
-        sy += 6.0f;
-        drawText(smallFont_, selectionCard.x + 12.0f, sy, "sensor buckets", {163, 196, 224, 255});
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "strain " + formatFloat(info.bodyStrain, 2)
+                + "  comp " + formatFloat(info.bodyCompression, 2)
+                + "  couple " + formatFloat(info.propulsionCoupling, 2),
+            {186, 196, 220, 255}
+        );
+        sy += 18.0f;
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "reef " + formatFloat(info.substrateProximity, 2)
+                + "  touch " + formatFloat(info.substrateContact, 2)
+                + "  hold " + formatFloat(info.substrateGrip, 2)
+                + "  scrape " + formatFloat(info.substrateScrape, 2),
+            {160, 194, 208, 255}
+        );
+        sy += 18.0f;
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "lee " + formatFloat(info.substrateShelter, 2)
+                + "  shear " + formatFloat(info.localShear, 2),
+            {160, 194, 208, 255}
+        );
+        sy += 18.0f;
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "brain h " + std::to_string(info.brainHiddenCount)
+                + "  conn " + std::to_string(info.brainConnectionCount)
+                + "  load " + formatFloat(info.brainComplexity, 2)
+                + "  nov " + formatFloat(info.brainNovelty, 2),
+            {163, 196, 224, 255}
+        );
+        sy += 20.0f;
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "act t " + formatFloat(info.outputs[0], 2)
+                + "  thrust " + formatFloat(info.outputs[1], 2)
+                + "  graze " + formatFloat(info.outputs[2], 2),
+            {205, 214, 222, 255}
+        );
         sy += 16.0f;
+        drawText(
+            smallFont_,
+            selectionCard.x + 12.0f,
+            sy,
+            "bite " + formatFloat(info.outputs[3], 2)
+                + "  signal " + formatFloat(info.outputs[4], 2)
+                + "  split " + formatFloat(info.outputs[5], 2),
+            {205, 214, 222, 255}
+        );
+        sy += 20.0f;
+        drawText(smallFont_, selectionCard.x + 12.0f, sy, "sensor buckets", {163, 196, 224, 255});
+        sy += 14.0f;
         constexpr std::array<const char*, 5> sensorLabels {"plant", "carrion", "prey-op", "threat", "signal"};
         const std::array<SDL_Color, 5> sensorColors {{
             {110, 227, 170, 255},
@@ -681,21 +1673,53 @@ void Renderer::draw(const Simulation& simulation, bool paused, int timeScale) {
         }};
         for (int sensorRow = 0; sensorRow < 5; ++sensorRow) {
             drawText(smallFont_, selectionCard.x + 12.0f, sy + 1.0f, sensorLabels[sensorRow], {205, 214, 222, 255});
-            drawBucketStrip(selectionCard.x + 78.0f, sy, selectionCard.w - 96.0f, 14.0f, sensorData[sensorRow], sensorColors[sensorRow]);
-            sy += 20.0f;
+            drawBucketStrip(selectionCard.x + 78.0f, sy, selectionViewport_.w - 92.0f, 12.0f, sensorData[sensorRow], sensorColors[sensorRow]);
+            sy += 17.0f;
         }
     } else {
-        drawText(font_, selectionCard.x + 12.0f, selectionCard.y + 40.0f, "click a creature to inspect it", {184, 192, 201, 255});
-        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 66.0f, "selection shows body physics, controller outputs,", {125, 139, 155, 255});
-        drawText(smallFont_, selectionCard.x + 12.0f, selectionCard.y + 84.0f, "and bucketed sensor activity.", {125, 139, 155, 255});
+        const float sy = selectionViewport_.y + 8.0f - selectionScroll_;
+        drawText(font_, selectionCard.x + 12.0f, sy, "click a creature to inspect it", {184, 192, 201, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, sy + 26.0f, "selection shows body physics, chain stress proxies,", {125, 139, 155, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, sy + 44.0f, "controller outputs, sensor activity, optional brain overlay,", {125, 139, 155, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, sy + 62.0f, "and reef/substrate contact metrics.", {125, 139, 155, 255});
+        drawText(smallFont_, selectionCard.x + 12.0f, sy + 86.0f, "drag empty water or use WASD to pan. T toggles the brain panel.", {125, 139, 155, 255});
     }
 
-    const SDL_FRect controlsCard {panel.x + 14.0f, panel.y + panel.h - 78.0f, panel.w - 28.0f, 78.0f};
-    drawCard(controlsCard, "Controls");
-    drawText(smallFont_, controlsCard.x + 12.0f, controlsCard.y + 36.0f, "space pause   1/2/3 speed   r reseed", {221, 228, 234, 255});
-    drawText(smallFont_, controlsCard.x + 12.0f, controlsCard.y + 54.0f, "left click inspect   c clear   esc quit", {221, 228, 234, 255});
+    setClipRect(renderer_, nullptr);
+    if (maxSelectionScroll > 1.0f) {
+        drawText(smallFont_, selectionCard.x + selectionCard.w - 84.0f, selectionCard.y + 7.0f, "wheel / [ ]", {124, 146, 164, 255});
+        const SDL_FRect track {selectionCard.x + selectionCard.w - 8.0f, selectionViewport_.y, 4.0f, selectionViewport_.h};
+        const float thumbHeight = std::max(24.0f, track.h * (selectionViewport_.h / selectionContentHeight));
+        const float thumbTravel = std::max(0.0f, track.h - thumbHeight);
+        const float thumbY = track.y + (selectionScroll_ / maxSelectionScroll) * thumbTravel;
+        fillRect(renderer_, track, {34, 44, 56, 255});
+        fillRect(renderer_, {track.x, thumbY, track.w, thumbHeight}, {114, 146, 170, 255});
+    }
 
-    SDL_RenderPresent(renderer_);
+    const SDL_FRect controlsCard {panel.x + 14.0f, panel.y + panel.h - controlsCardHeight, panel.w - 28.0f, controlsCardHeight};
+    drawCard(controlsCard, "Controls");
+    const float buttonGap = 8.0f;
+    const float buttonWidth = (controlsCard.w - 24.0f - buttonGap) * 0.5f;
+    const float buttonHeight = 20.0f;
+    randomSelectButton_ = {controlsCard.x + 12.0f, controlsCard.y + 32.0f, buttonWidth, buttonHeight};
+    topEnergyButton_ = {randomSelectButton_.x + buttonWidth + buttonGap, controlsCard.y + 32.0f, buttonWidth, buttonHeight};
+    dominantLineageButton_ = {controlsCard.x + 12.0f, controlsCard.y + 56.0f, buttonWidth, buttonHeight};
+    newestLineageButton_ = {dominantLineageButton_.x + buttonWidth + buttonGap, controlsCard.y + 56.0f, buttonWidth, buttonHeight};
+    overlayButton_ = {controlsCard.x + 12.0f, controlsCard.y + 80.0f, controlsCard.w - 24.0f, buttonHeight};
+    drawButton(randomSelectButton_, "random subject (N)", {40, 74, 108, 255}, {227, 235, 241, 255});
+    drawButton(topEnergyButton_, "top energy (F)", {54, 98, 84, 255}, {227, 235, 241, 255});
+    drawButton(dominantLineageButton_, "dominant lineage (L)", {79, 70, 126, 255}, {232, 231, 244, 255});
+    drawButton(newestLineageButton_, "newest branch (B)", {120, 76, 54, 255}, {244, 235, 227, 255});
+    drawButton(overlayButton_, "habitat overlay: " + std::string(debugOverlayLabel()) + " (V)", {48, 90, 102, 255}, {228, 238, 242, 255});
+    drawText(
+        smallFont_,
+        controlsCard.x + 12.0f,
+        controlsCard.y + 104.0f,
+        "drag/WASD pan. wheel or +/- zooms under cursor. G track. Z snap.",
+        {154, 173, 190, 255}
+    );
+
+    presentFrame(renderer_, window_);
 }
 
 }  // namespace alife

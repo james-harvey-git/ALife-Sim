@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Creature SDF Diagnostic</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1a1a2e; color: #e0e0e0; font: 13px/1.4 monospace; display: flex; height: 100vh; }
+#controls { width: 340px; overflow-y: auto; padding: 10px; background: #16213e; flex-shrink: 0; }
+#canvas-wrap { flex: 1; display: flex; align-items: center; justify-content: center; }
+canvas { background: #0f3460; border-radius: 8px; }
+h2 { font-size: 14px; color: #e94560; margin: 12px 0 6px; border-bottom: 1px solid #333; padding-bottom: 3px; }
+h2:first-child { margin-top: 0; }
+.slider-row { display: flex; align-items: center; margin: 3px 0; }
+.slider-row label { width: 120px; font-size: 11px; flex-shrink: 0; }
+.slider-row input[type=range] { flex: 1; margin: 0 6px; }
+.slider-row .val { width: 36px; text-align: right; font-size: 11px; color: #aaa; }
+.presets { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
+.presets button { background: #0f3460; border: 1px solid #e94560; color: #e0e0e0; padding: 3px 8px; border-radius: 3px; cursor: pointer; font: 11px monospace; }
+.presets button:hover { background: #e94560; color: #fff; }
+#info { font-size: 11px; color: #888; margin-top: 8px; padding-top: 8px; border-top: 1px solid #333; }
+</style>
+</head>
+<body>
+
+<div id="controls">
+  <h2>Presets</h2>
+  <div class="presets" id="preset-btns"></div>
+
+  <h2>Body Shape</h2>
+  <div id="body-sliders"></div>
+
+  <h2>Tail</h2>
+  <div id="tail-sliders"></div>
+
+  <h2>Fins</h2>
+  <div id="fin-sliders"></div>
+
+  <h2>Spikes & Whiskers</h2>
+  <div id="spike-sliders"></div>
+
+  <h2>Head & Mouth</h2>
+  <div id="head-sliders"></div>
+
+  <h2>Colour</h2>
+  <div id="colour-sliders"></div>
+
+  <h2>Animation</h2>
+  <div id="anim-sliders"></div>
+
+  <div id="info">
+    <div id="debug-info"></div>
+  </div>
+</div>
+
+<div id="canvas-wrap">
+  <canvas id="c" width="800" height="800"></canvas>
+</div>
+
+<script>
+// ── Genome parameters with defaults matching the sim ──
+const params = {
+  // Body
+  coreSize:       { val: 0.5, min: 0, max: 1, group: 'body', label: 'Core Size' },
+  elongation:     { val: 0.5, min: 0, max: 1, group: 'body', label: 'Elongation' },
+  bodyTaper:      { val: 0.5, min: 0, max: 1, group: 'body', label: 'Body Taper' },
+  blendStiffness: { val: 0.5, min: 0, max: 1, group: 'body', label: 'Blend Stiff' },
+
+  // Tail
+  tailLength:     { val: 0.5, min: 0, max: 1, group: 'tail', label: 'Tail Length' },
+  tailFlex:       { val: 0.5, min: 0, max: 1, group: 'tail', label: 'Tail Flex' },
+  tailFork:       { val: 0.5, min: 0, max: 1, group: 'tail', label: 'Tail Fork' },
+  tailWaveSpeed:  { val: 0.5, min: 0, max: 1, group: 'tail', label: 'Wave Speed' },
+  tailWaveLength: { val: 0.5, min: 0, max: 1, group: 'tail', label: 'Wave Length' },
+  tailTaper:      { val: 0.5, min: 0, max: 1, group: 'tail', label: 'Tail Taper' },
+
+  // Fins
+  finArea:        { val: 0.5, min: 0, max: 1, group: 'fin', label: 'Fin Area' },
+  finPlacement:   { val: 0.5, min: 0, max: 1, group: 'fin', label: 'Fin Placement' },
+  finShape:       { val: 0.5, min: 0, max: 1, group: 'fin', label: 'Fin Shape' },
+
+  // Spikes & Whiskers
+  spikes:         { val: 0.5, min: 0, max: 1, group: 'spike', label: 'Spikes' },
+  sensorSpan:     { val: 0.5, min: 0, max: 1, group: 'spike', label: 'Sensor Span' },
+
+  // Head
+  diet:           { val: 0.5, min: 0, max: 1, group: 'head', label: 'Diet (herb→carn)' },
+  jawLength:      { val: 0.5, min: 0, max: 1, group: 'head', label: 'Jaw Length' },
+  jawArc:         { val: 0.5, min: 0, max: 1, group: 'head', label: 'Jaw Arc' },
+  sensorRange:    { val: 0.5, min: 0, max: 1, group: 'head', label: 'Sensor Range' },
+
+  // Colour
+  hue:            { val: 0.5, min: 0, max: 1, group: 'colour', label: 'Hue' },
+  saturation:     { val: 0.55, min: 0, max: 1, group: 'colour', label: 'Saturation' },
+  lightness:      { val: 0.55, min: 0, max: 1, group: 'colour', label: 'Lightness' },
+  energy:         { val: 0.5, min: 0, max: 1, group: 'colour', label: 'Energy' },
+
+  // Animation
+  thrustDrive:    { val: 0.5, min: 0, max: 1, group: 'anim', label: 'Thrust' },
+  biteDrive:      { val: 0.0, min: 0, max: 1, group: 'anim', label: 'Bite Drive' },
+};
+
+// ── Presets ──
+const presets = {
+  'Sim Default':   {},
+  'Max Tail':      { tailLength: 1, tailFlex: 0.8, tailFork: 0.8, thrustDrive: 0.7 },
+  'Max Fins':      { finArea: 1.0, finShape: 0.8, thrustDrive: 0.6 },
+  'Max Spikes':    { spikes: 1.0 },
+  'Max Whiskers':  { sensorSpan: 1.0 },
+  'Carnivore':     { diet: 1.0, jawLength: 0.8, jawArc: 0.7 },
+  'Herbivore':     { diet: 0.0, jawLength: 0.3 },
+  'Long Worm':     { elongation: 0.9, bodyTaper: 0.8, coreSize: 0.4 },
+  'Fat Blob':      { elongation: 0.1, coreSize: 0.8, bodyTaper: 0.2 },
+  'All Max':       { tailLength:1, tailFlex:1, tailFork:1, finArea:1, finShape:1, spikes:1, sensorSpan:1, sensorRange:1, thrustDrive:0.8 },
+};
+
+// ── Build UI ──
+const groupMap = { body: 'body-sliders', tail: 'tail-sliders', fin: 'fin-sliders',
+                   spike: 'spike-sliders', head: 'head-sliders', colour: 'colour-sliders', anim: 'anim-sliders' };
+
+for (const [key, p] of Object.entries(params)) {
+  const container = document.getElementById(groupMap[p.group]);
+  const row = document.createElement('div');
+  row.className = 'slider-row';
+  row.innerHTML = `<label>${p.label}</label><input type="range" min="${p.min}" max="${p.max}" step="0.01" value="${p.val}" id="s-${key}"><span class="val" id="v-${key}">${p.val.toFixed(2)}</span>`;
+  container.appendChild(row);
+  const slider = row.querySelector('input');
+  const valSpan = row.querySelector('.val');
+  slider.addEventListener('input', () => { p.val = parseFloat(slider.value); valSpan.textContent = p.val.toFixed(2); });
+}
+
+const presetContainer = document.getElementById('preset-btns');
+for (const [name, overrides] of Object.entries(presets)) {
+  const btn = document.createElement('button');
+  btn.textContent = name;
+  btn.addEventListener('click', () => {
+    // Reset all to defaults
+    for (const [k, p] of Object.entries(params)) {
+      p.val = k === 'saturation' || k === 'lightness' ? 0.55 : 0.5;
+      if (k === 'biteDrive') p.val = 0;
+    }
+    // Apply overrides
+    for (const [k, v] of Object.entries(overrides)) { if (params[k]) params[k].val = v; }
+    // Update sliders
+    for (const [k, p] of Object.entries(params)) {
+      document.getElementById(`s-${k}`).value = p.val;
+      document.getElementById(`v-${k}`).textContent = p.val.toFixed(2);
+    }
+  });
+  presetContainer.appendChild(btn);
+}
+
+// ── SDF math (matches GLSL exactly) ──
+function lerp(a, b, t) { return a + (b - a) * t; }
+function clamp(x, lo, hi) { return Math.max(lo, Math.min(hi, x)); }
+function smoothstep(e0, e1, x) { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); }
+function len(x, y) { return Math.sqrt(x * x + y * y); }
+function dot(ax, ay, bx, by) { return ax * bx + ay * by; }
+
+function sdCircle(px, py, r) { return len(px, py) - r; }
+
+function smin(a, b, k) {
+  if (k < 1e-6) return Math.min(a, b);
+  const h = clamp(0.5 + 0.5 * (b - a) / k, 0, 1);
+  return lerp(b, a, h) - k * h * (1 - h);
+}
+
+function sdTaperedCapsule(px, py, ax, ay, bx, by, rA, rB) {
+  const pax = px - ax, pay = py - ay;
+  const bax = bx - ax, bay = by - ay;
+  const baba = bax * bax + bay * bay;
+  if (baba < 1e-6) return len(pax, pay) - rA;
+  const h = clamp(dot(pax, pay, bax, bay) / baba, 0, 1);
+  const r = lerp(rA, rB, h);
+  return len(pax - bax * h, pay - bay * h) - r;
+}
+
+function sdCapsule(px, py, ax, ay, bx, by, r) {
+  return sdTaperedCapsule(px, py, ax, ay, bx, by, r, r);
+}
+
+// ── HSL → RGB (matches GLSL) ──
+function hsl2rgb(h, s, l) {
+  h = ((h % 1) + 1) % 1;
+  h *= 6;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs((h % 2) - 1));
+  let r, g, b;
+  if      (h < 1) { r = c; g = x; b = 0; }
+  else if (h < 2) { r = x; g = c; b = 0; }
+  else if (h < 3) { r = 0; g = c; b = x; }
+  else if (h < 4) { r = 0; g = x; b = c; }
+  else if (h < 5) { r = x; g = 0; b = c; }
+  else            { r = c; g = 0; b = x; }
+  const m = l - c * 0.5;
+  return [r + m, g + m, b + m];
+}
+
+// ── Derive creature geometry (matches deriveTraits in Simulation.cpp) ──
+function deriveCreature(p) {
+  const minCore = 18, maxCore = 38; // approximate world-unit radii
+  const coreRadius = lerp(minCore, maxCore, p.coreSize.val);
+  const elongation = p.elongation.val;
+  const minorRadius = coreRadius / lerp(1.0, 1.32, elongation);
+  const segSpacing = lerp(7, 15, elongation) * (0.9 + p.coreSize.val * 0.45);
+  const tailLengthScale = lerp(0.74, 1.42, p.tailLength.val);
+  const taperExp = lerp(0.6, 2.2, p.bodyTaper.val);
+
+  const segs = [];
+  // Creature points in world, facing right
+  const fwd = [1, 0];
+  const headPos = [400, 400]; // centre of canvas
+
+  for (let i = 0; i < 6; i++) {
+    const t = i / 5;
+    const rearBias = Math.pow(t, taperExp);
+    let radius;
+    if (i === 0) {
+      radius = minorRadius * (0.9 + p.jawLength.val * 0.18);
+    } else {
+      radius = minorRadius * lerp(0.92, 0.18, rearBias);
+    }
+    const spacingScale = i === 0 ? 0 : lerp(0.92, tailLengthScale, Math.pow(t, 1.35));
+    const x = headPos[0] - i * segSpacing * spacingScale;
+    const y = headPos[1];
+    segs.push({ x, y, r: radius });
+  }
+  return { segs, fwd, minorRadius, segSpacing, coreRadius, avgRadius: segs.reduce((s, seg) => s + seg.r, 0) / 6 };
+}
+
+// ── Render single frame ──
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let time = 0;
+
+function render() {
+  time += 0.016;
+  const W = canvas.width, H = canvas.height;
+  const cr = deriveCreature(params);
+  const { segs, fwd, avgRadius } = cr;
+
+  const gaitPhase = time * 3.0;
+
+  // Create image data for per-pixel SDF rendering
+  const imgData = ctx.createImageData(W, H);
+  const data = imgData.data;
+
+  // Compute bounding box to avoid rendering every pixel
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const seg of segs) {
+    minX = Math.min(minX, seg.x - seg.r * 3);
+    maxX = Math.max(maxX, seg.x + seg.r * 3);
+    minY = Math.min(minY, seg.y - seg.r * 3);
+    maxY = Math.max(maxY, seg.y + seg.r * 3);
+  }
+
+  // Extend bounds for appendages
+  const tailLen = params.tailLength.val * avgRadius * 3.5;
+  const finLen = segs[2].r * (0.8 + params.finArea.val * 1.4);
+  const spikeLen = avgRadius * (0.06 + params.spikes.val * 0.20);
+  const whiskerLen = segs[0].r * 1.8;
+  const appendageExtend = Math.max(tailLen, finLen, spikeLen, whiskerLen) + 20;
+  minX -= appendageExtend; maxX += appendageExtend;
+  minY -= appendageExtend; maxY += appendageExtend;
+
+  const x0 = Math.max(0, Math.floor(minX));
+  const x1 = Math.min(W, Math.ceil(maxX));
+  const y0 = Math.max(0, Math.floor(minY));
+  const y1 = Math.min(H, Math.ceil(maxY));
+
+  // Precompute appendage geometry
+  const p = params;
+  const tailSeg = segs[5];
+  const tailR = tailSeg.r;
+  const tailDirX = tailSeg.x - segs[4].x;
+  const tailDirY = tailSeg.y - segs[4].y;
+  const tailDirLen = len(tailDirX, tailDirY);
+  const tailAxisX = tailDirLen > 0.001 ? tailDirX / tailDirLen : 1;
+  const tailAxisY = tailDirLen > 0.001 ? tailDirY / tailDirLen : 0;
+  const tailPerpX = -tailAxisY;
+  const tailPerpY = tailAxisX;
+
+  const waveSpeedMul = 0.6 + p.tailWaveSpeed.val * 1.9;
+  const waveLenMul = 1.2 + p.tailWaveLength.val * 3.0;
+  const amplitude = (0.14 + p.tailFlex.val * 0.42) * (0.28 + p.thrustDrive.val * 0.72);
+
+  const tailCount = clamp(1 + Math.floor(p.tailFork.val * 2.0 + p.tailFlex.val * 0.5), 1, 4);
+  const fLen = p.tailLength.val * avgRadius * 3.5;
+
+  // Precompute tail control points
+  const tailCPs = [];
+  for (let t = 0; t < tailCount; t++) {
+    const spread = (t - (tailCount - 1) * 0.5) * 0.35;
+    const rootX = tailSeg.x + tailAxisX * tailR * 0.6 + tailPerpX * spread * tailR;
+    const rootY = tailSeg.y + tailAxisY * tailR * 0.6 + tailPerpY * spread * tailR;
+
+    const basePhase = gaitPhase * waveSpeedMul * 1.18 + t * 1.3;
+    const w1 = Math.sin(basePhase) * amplitude;
+    const w2 = Math.sin(basePhase + waveLenMul * 0.33) * amplitude * 0.8;
+    const w3 = Math.sin(basePhase + waveLenMul * 0.66) * amplitude * 0.5;
+
+    const P0x = rootX, P0y = rootY;
+    const P1x = rootX + tailAxisX * fLen * 0.33 + tailPerpX * w1 * fLen * 0.35;
+    const P1y = rootY + tailAxisY * fLen * 0.33 + tailPerpY * w1 * fLen * 0.35;
+    const P2x = rootX + tailAxisX * fLen * 0.66 + tailPerpX * w2 * fLen * 0.25;
+    const P2y = rootY + tailAxisY * fLen * 0.66 + tailPerpY * w2 * fLen * 0.25;
+    const P3x = rootX + tailAxisX * fLen + tailPerpX * w3 * fLen * 0.10;
+    const P3y = rootY + tailAxisY * fLen + tailPerpY * w3 * fLen * 0.10;
+
+    const rootW = avgRadius * (0.10 + p.tailLength.val * 0.12);
+    const tipW = avgRadius * lerp(0.04, 0.012, p.tailTaper.val);
+    const w01 = lerp(rootW, rootW * 0.6, 0.5);
+    const w12 = lerp(rootW * 0.6, tipW * 2.0, 0.5);
+
+    tailCPs.push({ P0x, P0y, P1x, P1y, P2x, P2y, P3x, P3y, rootW, tipW, w01, w12 });
+  }
+
+  // Precompute fin geometry
+  const finPairs = [];
+  if (p.finArea.val > 0.1) {
+    const finSegIdx = clamp(1 + Math.floor(p.finPlacement.val * 3.0), 1, 4);
+    const finPos = segs[finSegIdx];
+    const finR = finPos.r;
+    const fDirX = segs[finSegIdx - 1].x - finPos.x;
+    const fDirY = segs[finSegIdx - 1].y - finPos.y;
+    const fDirLen = len(fDirX, fDirY);
+    const finAxisX = fDirLen > 0.001 ? fDirX / fDirLen : 1;
+    const finAxisY = fDirLen > 0.001 ? fDirY / fDirLen : 0;
+    const finPerpX = -finAxisY;
+    const finPerpY = finAxisX;
+
+    const flap = Math.sin(gaitPhase * 1.36) * (0.12 + p.finArea.val * 0.48) * (0.25 + p.thrustDrive.val * 0.75);
+
+    for (let side = 0; side < 2; side++) {
+      const sSign = side === 0 ? -1 : 1;
+      const fbx = finPos.x + finPerpX * sSign * finR * 0.7;
+      const fby = finPos.y + finPerpY * sSign * finR * 0.7;
+      const fLength = finR * (0.8 + p.finArea.val * 1.4);
+      const fmx = fbx + finPerpX * sSign * fLength * 0.55 + finAxisX * (flap * finR * sSign - fLength * 0.12);
+      const fmy = fby + finPerpY * sSign * fLength * 0.55 + finAxisY * (flap * finR * sSign - fLength * 0.12);
+      const ftx = fbx + finPerpX * sSign * fLength + finAxisX * flap * finR * sSign * 0.6;
+      const fty = fby + finPerpY * sSign * fLength + finAxisY * flap * finR * sSign * 0.6;
+      const baseW = avgRadius * (0.06 + p.finArea.val * 0.14);
+      const midW = baseW * (0.6 + p.finShape.val * 1.4);
+      const tipW = baseW * 0.3;
+      finPairs.push({ fbx, fby, fmx, fmy, ftx, fty, baseW, midW, tipW });
+    }
+  }
+
+  // Precompute whisker geometry
+  const whiskers = [];
+  const sensorExpr = p.sensorSpan.val;
+  const whiskerCount = sensorExpr > 0.80 ? 3 : sensorExpr > 0.55 ? 2 : sensorExpr > 0.25 ? 1 : 0;
+  if (whiskerCount > 0) {
+    const headR = segs[0].r;
+    const hpx = segs[0].x, hpy = segs[0].y;
+    const hax = 1, hay = 0; // fwd
+    const hapx = 0, hapy = 1; // perp
+
+    for (let w = 0; w < whiskerCount; w++) {
+      let wSide;
+      if (whiskerCount === 1) wSide = 0;
+      else if (whiskerCount === 2) wSide = w === 0 ? -1 : 1;
+      else wSide = w === 0 ? -1 : w === 1 ? 0 : 1;
+
+      const wbx = hpx + hapx * wSide * headR * 0.5 + hax * headR * 0.15;
+      const wby = hpy + hapy * wSide * headR * 0.5 + hay * headR * 0.15;
+
+      const wiggle = Math.sin(gaitPhase * 2.6 + w * 1.4) * 0.18 + Math.sin(gaitPhase * 4.1 + w * 2.3) * 0.06;
+      let wtx, wty;
+      if (Math.abs(wSide) < 0.1) {
+        wtx = wbx + hax * headR * 1.8 + hapx * wiggle * headR * 0.5;
+        wty = wby + hay * headR * 1.8 + hapy * wiggle * headR * 0.5;
+      } else {
+        wtx = wbx + hapx * wSide * headR * 1.2 + hax * (headR * 0.6 + wiggle * headR);
+        wty = wby + hapy * wSide * headR * 1.2 + hay * (headR * 0.6 + wiggle * headR);
+      }
+      const ww = avgRadius * 0.07;
+      whiskers.push({ wbx, wby, wtx, wty, ww });
+    }
+  }
+
+  // Precompute spike geometry
+  const spikeGeom = [];
+  if (p.spikes.val > 0.28) {
+    const dorsalX = 0, dorsalY = -1; // perp to fwd (up)
+    for (let s = 1; s <= 4; s++) {
+      const sPos = segs[s];
+      const sR = sPos.r;
+      const sDirX = segs[s - 1].x - sPos.x;
+      const sDirY = segs[s - 1].y - sPos.y;
+      const sDirLen = len(sDirX, sDirY);
+      const sAxisX = sDirLen > 0.001 ? sDirX / sDirLen : 1;
+      const sAxisY = sDirLen > 0.001 ? sDirY / sDirLen : 0;
+
+      const ridgeLen = avgRadius * (0.06 + p.spikes.val * 0.20);
+      const ridgeW = avgRadius * 0.10;
+      const rbx = sPos.x + dorsalX * sR * 0.8;
+      const rby = sPos.y + dorsalY * sR * 0.8;
+      const rtx = rbx + dorsalX * ridgeLen - sAxisX * ridgeLen * 0.35;
+      const rty = rby + dorsalY * ridgeLen - sAxisY * ridgeLen * 0.35;
+      spikeGeom.push({ rbx, rby, rtx, rty, ridgeW });
+    }
+  }
+
+  // Colour setup
+  const hue = p.hue.val;
+  const baseSat = 0.30 + 0.62 * p.saturation.val;
+  const baseLit = 0.32 + 0.40 * p.lightness.val;
+  const sat = clamp(baseSat + 0.08 * 0.5 + 0.06 * 0.5 * p.diet.val - 0.07, 0, 1);
+  const lit = clamp(baseLit + p.energy.val * 0.10 - 0.05, 0, 1);
+
+  const baseCol = hsl2rgb(hue, sat, lit);
+  const rimCol = hsl2rgb(hue - 0.03, sat * 1.1, lit - 0.18);
+  const innerCol = hsl2rgb(hue + 0.04, sat * 0.7, lit + 0.16);
+  const energyCol = hsl2rgb(hue + 0.1, 1.0, 0.72);
+  const outlineCol = hsl2rgb(hue, sat * 0.4, lit * 0.25);
+
+  // Per-pixel rendering
+  const taperCurve = p.bodyTaper.val;
+  const blendStiff = p.blendStiffness.val;
+
+  // Track debug info
+  let debugTailRootW = 0, debugTailTipW = 0, debugFinBaseW = 0;
+  if (tailCPs.length > 0) { debugTailRootW = tailCPs[0].rootW; debugTailTipW = tailCPs[0].tipW; }
+  if (finPairs.length > 0) { debugFinBaseW = finPairs[0].baseW; }
+
+  for (let py = y0; py < y1; py++) {
+    for (let px = x0; px < x1; px++) {
+      // ── Body SDF ──
+      let dBody = sdCircle(px - segs[0].x, py - segs[0].y, segs[0].r);
+
+      for (let i = 1; i < 6; i++) {
+        const segT = i / 5;
+        const k = avgRadius * lerp(0.55, 0.22, segT * segT * taperCurve) * lerp(1.1, 0.55, blendStiff);
+
+        const dCap = sdTaperedCapsule(px, py, segs[i-1].x, segs[i-1].y, segs[i].x, segs[i].y, segs[i-1].r, segs[i].r);
+        dBody = smin(dBody, dCap, k);
+      }
+
+      // Head elongation
+      const headElong = 1.0 + p.diet.val * 0.15;
+      const toFragX = px - segs[0].x, toFragY = py - segs[0].y;
+      const fwdDist = toFragX; // dot with (1,0)
+      const squeezedX = toFragX - fwdDist * (1.0 - 1.0 / headElong);
+      const squeezedY = toFragY;
+      const dHeadEllipse = len(squeezedX, squeezedY) - segs[0].r;
+      const headK = avgRadius * 0.5 * lerp(1.1, 0.55, blendStiff);
+      dBody = smin(dBody, dHeadEllipse, headK);
+
+      let dOrganism = dBody;
+
+      // ── Tails ──
+      let dTails = 1e9;
+      for (const tc of tailCPs) {
+        const s1 = sdTaperedCapsule(px, py, tc.P0x, tc.P0y, tc.P1x, tc.P1y, tc.rootW, tc.w01);
+        const s2 = sdTaperedCapsule(px, py, tc.P1x, tc.P1y, tc.P2x, tc.P2y, tc.w01, tc.w12);
+        const s3 = sdTaperedCapsule(px, py, tc.P2x, tc.P2y, tc.P3x, tc.P3y, tc.w12, tc.tipW);
+        let dFil = smin(s1, s2, tc.rootW * 0.6);
+        dFil = smin(dFil, s3, tc.rootW * 0.4);
+        dTails = Math.min(dTails, dFil);
+      }
+      const tailBlendW = avgRadius * (0.10 + p.tailLength.val * 0.12);
+      dOrganism = smin(dOrganism, dTails, tailBlendW * 2.0);
+
+      // ── Fins ──
+      for (const f of finPairs) {
+        const d1 = sdTaperedCapsule(px, py, f.fbx, f.fby, f.fmx, f.fmy, f.baseW, f.midW);
+        const d2 = sdTaperedCapsule(px, py, f.fmx, f.fmy, f.ftx, f.fty, f.midW, f.tipW);
+        const dFin = smin(d1, d2, f.midW * 0.8);
+        dOrganism = smin(dOrganism, dFin, f.baseW * 3.0);
+      }
+
+      // ── Whiskers ──
+      for (const wh of whiskers) {
+        const dW = sdTaperedCapsule(px, py, wh.wbx, wh.wby, wh.wtx, wh.wty, wh.ww, wh.ww * 0.08);
+        dOrganism = smin(dOrganism, dW, wh.ww * 1.5);
+      }
+
+      // ── Spikes ──
+      for (const sp of spikeGeom) {
+        const dSp = sdTaperedCapsule(px, py, sp.rbx, sp.rby, sp.rtx, sp.rty, sp.ridgeW, sp.ridgeW * 0.4);
+        dOrganism = smin(dOrganism, dSp, sp.ridgeW * 2.0);
+      }
+
+      // ── Mouth carve ──
+      const headR3 = segs[0].r;
+      const mCentreX = segs[0].x + headR3 * 0.88;
+      const mCentreY = segs[0].y;
+      const mpx = px - mCentreX, mpy = py - mCentreY;
+      // fwd = (1,0) → mLocal.x = -mpy, mLocal.y = mpx (rotation)
+      const mLocalX = mpy; // simplified for fwd=(1,0)
+      const mLocalY = mpx;
+
+      const baseW_m = headR3 * lerp(0.32, 0.22, p.diet.val) * (0.5 + p.jawArc.val * 0.7);
+      const baseH_m = headR3 * lerp(0.10, 0.06, p.diet.val) * (0.3 + p.jawLength.val * 0.8);
+      const gape = baseH_m * (1.0 + p.biteDrive.val * lerp(2.0, 5.0, p.diet.val));
+
+      const dMouthHerb = (len(mLocalX / baseW_m, mLocalY / gape) - 1.0) * Math.min(baseW_m, gape);
+      const lensR = baseW_m * lerp(1.8, 0.9, p.diet.val);
+      const lensOff = Math.sqrt(Math.max(0, lensR * lensR - baseW_m * baseW_m));
+      const dLensTop = len(mLocalX, mLocalY + lensOff) - lensR;
+      const dLensBot = len(mLocalX, mLocalY - lensOff) - lensR;
+      const dMouthCarn = Math.max(dLensTop, dLensBot) - gape;
+      const dMouth = lerp(dMouthHerb, dMouthCarn, p.diet.val);
+
+      const carveDepth = smoothstep(0, -headR3 * 0.15, sdCircle(px - segs[0].x, py - segs[0].y, headR3));
+      const dMouthCarve = lerp(1e4, dMouth, carveDepth);
+      dOrganism = Math.max(dOrganism, -dMouthCarve);
+
+      // ── Alpha ──
+      const aa = 0.7;
+      const bodyAlpha = smoothstep(aa, -aa, dOrganism);
+      if (bodyAlpha < 0.001) continue;
+
+      // ── Shading ──
+      const rimOuter = Math.max(2.0, avgRadius * 0.08);
+      const rimInner = Math.max(5.0, avgRadius * 0.25);
+      const rim = smoothstep(0, -rimOuter, dOrganism) * (1 - smoothstep(-rimOuter, -rimInner, dOrganism));
+      const inner = smoothstep(-1.5, -Math.max(8.0, avgRadius * 0.35), dOrganism);
+      const outW = 1.2;
+      const outline = smoothstep(outW, outW * 0.15, Math.abs(dOrganism));
+
+      let cr = lerp(baseCol[0], innerCol[0], inner * 0.55);
+      let cg = lerp(baseCol[1], innerCol[1], inner * 0.55);
+      let cb = lerp(baseCol[2], innerCol[2], inner * 0.55);
+      cr = lerp(cr, rimCol[0], rim * 0.5);
+      cg = lerp(cg, rimCol[1], rim * 0.5);
+      cb = lerp(cb, rimCol[2], rim * 0.5);
+      cr += energyCol[0] * p.energy.val * 0.12 * inner;
+      cg += energyCol[1] * p.energy.val * 0.12 * inner;
+      cb += energyCol[2] * p.energy.val * 0.12 * inner;
+
+      // SSS near head
+      const headD = sdCircle(px - segs[0].x, py - segs[0].y, segs[0].r);
+      const sss = smoothstep(0, -avgRadius * 0.6, headD) * smoothstep(-avgRadius * 0.6, 0, headD + avgRadius * 0.3);
+      const sssCol = hsl2rgb(hue + 0.08, 0.5, 0.9);
+      cr += sssCol[0] * sss * 0.18 * (0.5 + p.energy.val * 0.5);
+      cg += sssCol[1] * sss * 0.18 * (0.5 + p.energy.val * 0.5);
+      cb += sssCol[2] * sss * 0.18 * (0.5 + p.energy.val * 0.5);
+
+      // Outline
+      cr = lerp(cr, outlineCol[0], outline * 0.85);
+      cg = lerp(cg, outlineCol[1], outline * 0.85);
+      cb = lerp(cb, outlineCol[2], outline * 0.85);
+
+      // Mouth interior
+      const mouthMask = smoothstep(0.5, -0.5, dMouth) * smoothstep(1.0, -1.0, dBody);
+      const mouthCol = p.diet.val < 0.5 ? hsl2rgb(hue + 0.94, 0.5, 0.38) : hsl2rgb(hue - 0.06, 0.4, 0.12);
+      cr = lerp(cr, mouthCol[0], mouthMask * 0.92);
+      cg = lerp(cg, mouthCol[1], mouthMask * 0.92);
+      cb = lerp(cb, mouthCol[2], mouthMask * 0.92);
+
+      // ── Eyes ──
+      const sensorR = p.sensorRange.val;
+      const eyeCount = sensorR > 0.6 ? 3 : sensorR > 0.3 ? 2 : 1;
+      const eyeR = headR3 * 0.12;
+      let dEyes = 1e9, dPupils = 1e9, dHL = 1e9;
+
+      for (let e = 0; e < eyeCount; e++) {
+        let ea;
+        if (eyeCount === 1) ea = 0;
+        else if (eyeCount === 2) ea = e === 0 ? -0.32 : 0.32;
+        else ea = e === 0 ? -0.52 : e === 1 ? 0 : 0.52;
+
+        const eyeX = segs[0].x + headR3 * 0.55;
+        const eyeY = segs[0].y + ea * headR3;
+        dEyes = Math.min(dEyes, sdCircle(px - eyeX, py - eyeY, eyeR));
+        dPupils = Math.min(dPupils, sdCircle(px - eyeX, py - eyeY, eyeR * 0.42));
+        dHL = Math.min(dHL, sdCircle(px - eyeX - eyeR * 0.2, py - eyeY + eyeR * 0.25, eyeR * 0.18));
+      }
+
+      const eyeAlpha = smoothstep(0.6, -0.6, dEyes);
+      const eyeInner = smoothstep(0, -eyeR, dEyes);
+      const pupilA = smoothstep(0.5, -0.5, dPupils);
+      const hlA = smoothstep(0.3, -0.3, dHL);
+      const irisCol = hsl2rgb(hue * (1 - 0.5 * p.diet.val * 0.5) + 0.04 * p.diet.val, 0.7, 0.45);
+
+      cr = lerp(cr, 0.95, eyeAlpha * 0.97);
+      cg = lerp(cg, 0.96, eyeAlpha * 0.97);
+      cb = lerp(cb, 0.97, eyeAlpha * 0.97);
+      cr = lerp(cr, irisCol[0], eyeAlpha * eyeInner * 0.85);
+      cg = lerp(cg, irisCol[1], eyeAlpha * eyeInner * 0.85);
+      cb = lerp(cb, irisCol[2], eyeAlpha * eyeInner * 0.85);
+      cr = lerp(cr, 0.04, pupilA * 0.95);
+      cg = lerp(cg, 0.05, pupilA * 0.95);
+      cb = lerp(cb, 0.07, pupilA * 0.95);
+      cr = lerp(cr, 1, hlA * 0.92);
+      cg = lerp(cg, 1, hlA * 0.92);
+      cb = lerp(cb, 1, hlA * 0.92);
+
+      const idx = (py * W + px) * 4;
+      const alpha = bodyAlpha * 0.97;
+      // Premultiplied alpha compositing over dark blue background
+      const bgR = 15/255, bgG = 52/255, bgB = 96/255;
+      data[idx]     = Math.round(clamp(lerp(bgR, cr, alpha), 0, 1) * 255);
+      data[idx + 1] = Math.round(clamp(lerp(bgG, cg, alpha), 0, 1) * 255);
+      data[idx + 2] = Math.round(clamp(lerp(bgB, cb, alpha), 0, 1) * 255);
+      data[idx + 3] = 255;
+    }
+  }
+
+  ctx.putImageData(imgData, 0, 0);
+
+  // Clear outside rendered region (background)
+  ctx.fillStyle = '#0f3460';
+  if (y0 > 0) ctx.fillRect(0, 0, W, y0);
+  if (y1 < H) ctx.fillRect(0, y1, W, H - y1);
+  if (x0 > 0) ctx.fillRect(0, y0, x0, y1 - y0);
+  if (x1 < W) ctx.fillRect(x1, y0, W - x1, y1 - y0);
+
+  // Debug info
+  document.getElementById('debug-info').innerHTML =
+    `<b>Sizes (pixels):</b><br>` +
+    `Head radius: ${segs[0].r.toFixed(1)}<br>` +
+    `Tail seg radius: ${tailR.toFixed(1)}<br>` +
+    `Avg radius: ${avgRadius.toFixed(1)}<br>` +
+    `Tail root W: <b style="color:${debugTailRootW < 1.5 ? '#e94560' : '#4ecdc4'}">${debugTailRootW.toFixed(2)}</b><br>` +
+    `Tail tip W: <b style="color:${debugTailTipW < 0.5 ? '#e94560' : '#4ecdc4'}">${debugTailTipW.toFixed(2)}</b><br>` +
+    `Tail length: ${fLen.toFixed(1)}<br>` +
+    `Fin base W: <b style="color:${debugFinBaseW < 1.5 ? '#e94560' : '#4ecdc4'}">${debugFinBaseW.toFixed(2)}</b><br>` +
+    `Tail count: ${tailCount}<br>` +
+    `Whisker count: ${whiskerCount}<br>` +
+    (debugTailRootW < 1.5 || debugFinBaseW < 1.5 ? '<br><b style="color:#e94560">⚠ Sub-pixel widths — appendages invisible!</b>' : '');
+
+  requestAnimationFrame(render);
+}
+
+render();
+</script>
+</body>
+</html>
