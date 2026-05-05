@@ -308,7 +308,7 @@ function render() {
     const P3y = rootY + tailAxisY * fLen + tailPerpY * w3 * fLen * 0.10;
 
     const rootW = avgRadius * (0.10 + p.tailLength.val * 0.12);
-    const tipW = avgRadius * lerp(0.04, 0.012, p.tailTaper.val);
+    const tipW = Math.max(0.8, avgRadius * lerp(0.08, 0.03, p.tailTaper.val));
     const w01 = lerp(rootW, rootW * 0.6, 0.5);
     const w12 = lerp(rootW * 0.6, tipW * 2.0, 0.5);
 

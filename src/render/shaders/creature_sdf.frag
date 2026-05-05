@@ -252,7 +252,7 @@ void main() {
             // Tapered widths — scale off avgRadius for visibility
             // (tailR alone is too small: ~5% of head → sub-pixel widths)
             float rootW = avgRadius * (0.10 + tailLength * 0.12);
-            float tipW = avgRadius * mix(0.04, 0.012, tailTaperGene);
+            float tipW = max(0.8, avgRadius * mix(0.08, 0.03, tailTaperGene));
 
             // 3 tapered capsule segments blended smoothly
             float w01 = mix(rootW, rootW * 0.6, 0.5);
